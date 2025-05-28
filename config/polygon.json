@@ -1,0 +1,129 @@
+{
+  "tokens": {
+    "WMATIC": {
+      "address": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
+      "decimals": 18,
+      "symbol": "WMATIC"
+    },
+    "WETH": {
+      "address": "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
+      "decimals": 18,
+      "symbol": "WETH"
+    },
+    "WBTC": {
+      "address": "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6",
+      "decimals": 8,
+      "symbol": "WBTC"
+    },
+    "USDC": {
+      "address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+      "decimals": 6,
+      "symbol": "USDC"
+    },
+    "USDT": {
+      "address": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+      "decimals": 6,
+      "symbol": "USDT"
+    },
+    "LINK": {
+      "address": "0x53E0bca35eC356BD5ddDFebbD1Fc0fD03FaBad39",
+      "decimals": 18,
+      "symbol": "LINK"
+    },
+    "AAVE": {
+      "address": "0xD6DF932A45C0f255f85145f286eA0b292B21C90B",
+      "decimals": 18,
+      "symbol": "AAVE"
+    },
+    "CRV": {
+      "address": "0x172370d5Cd63279eFa6d502DAB29171933a610AF",
+      "decimals": 18,
+      "symbol": "CRV"
+    }
+  },
+  "dexes": {
+    "uniswap": {
+      "name": "Uniswap V3",
+      "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+      "quoter": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
+      "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      "type": "v3",
+      "fees": [500, 3000, 10000]
+    },
+    "sushiswap": {
+      "name": "SushiSwap",
+      "router": "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",
+      "factory": "0xc35DADB65012eC5796536bD9864eD8773aBc74C4",
+      "type": "v2"
+    },
+    "quickswap": {
+      "name": "QuickSwap",
+      "router": "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",
+      "factory": "0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32",
+      "type": "v2"
+    }
+  },
+  "tradingPaths": {
+    "CRV": [
+      ["CRV", "WETH", "USDC"],
+      ["CRV", "WMATIC", "USDC"],
+      ["CRV", "USDC"],
+      ["CRV", "WETH"],
+      ["CRV", "USDT"]
+    ],
+    "LINK": [
+      ["LINK", "WETH", "USDC"],
+      ["LINK", "WMATIC", "USDC"],
+      ["LINK", "USDC"],
+      ["LINK", "WETH"],
+      ["LINK", "USDT"]
+    ],
+    "AAVE": [
+      ["AAVE", "WETH", "USDC"],
+      ["AAVE", "WMATIC", "USDC"],
+      ["AAVE", "USDC"],
+      ["AAVE", "WETH"],
+      ["AAVE", "USDT"]
+    ],
+    "WETH": [
+      ["WETH", "USDC"],
+      ["WETH", "USDT"],
+      ["WETH", "WMATIC"],
+      ["WETH", "WBTC"]
+    ],
+    "WBTC": [
+      ["WBTC", "WETH", "USDC"],
+      ["WBTC", "USDC"],
+      ["WBTC", "WETH"],
+      ["WBTC", "USDT"]
+    ],
+    "USDT": [
+      ["USDT", "USDC"],
+      ["USDT", "WETH"],
+      ["USDT", "WMATIC"]
+    ],
+    "USDC": [
+      ["USDC", "USDT"],
+      ["USDC", "WETH"],
+      ["USDC", "WMATIC"],
+      ["USDC", "WBTC"]
+    ],
+    "WMATIC": [
+      ["WMATIC", "USDC"],
+      ["WMATIC", "WETH"],
+      ["WMATIC", "USDT"]
+    ]
+  },
+  "settings": {
+    "minBasisPointsPerTrade": 50,
+    "maxSlippageBps": 300,
+    "checkIntervalMs": 30000,
+    "inputAmountUSD": 1000,
+    "maxRetries": 3,
+    "retryDelayMs": 2000,
+    "notificationCooldownMs": 300000,
+    "priceTimeoutMs": 15000,
+    "rpcTimeoutMs": 10000,
+    "maxConcurrentRequests": 5
+  }
+}

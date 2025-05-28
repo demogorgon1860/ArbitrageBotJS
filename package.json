@@ -1,0 +1,67 @@
+{
+  "name": "polygon-arbitrage-bot",
+  "version": "1.0.0",
+  "description": "Production-ready arbitrage monitoring bot for Polygon DEX platforms",
+  "main": "scripts/trade.js",
+  "scripts": {
+    "start": "node scripts/trade.js",
+    "test": "node scripts/test.js",
+    "compile": "npx hardhat compile",
+    "clean": "npx hardhat clean",
+    "deploy": "npx hardhat run scripts/deploy.js --network polygon",
+    "deploy:local": "npx hardhat run scripts/deploy.js --network hardhat",
+    "interact": "npx hardhat run scripts/contract-interaction.js --network polygon",
+    "contract:info": "npx hardhat run scripts/contract-interaction.js --network polygon info",
+    "contract:balances": "npx hardhat run scripts/contract-interaction.js --network polygon balances",
+    "contract:test": "npx hardhat run scripts/contract-interaction.js --network polygon test",
+    "hardhat": "npx hardhat run scripts/trade.js --network polygon",
+    "docker:build": "docker build -t polygon-arbitrage-bot .",
+    "docker:run": "docker-compose up -d",
+    "docker:stop": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "lint": "eslint scripts/ --fix",
+    "validate": "node scripts/validate-config.js"
+  },
+  "dependencies": {
+    "@nomiclabs/hardhat-ethers": "^2.2.3",
+    "@nomiclabs/hardhat-waffle": "^2.0.6",
+    "@openzeppelin/contracts": "^4.9.5",
+    "dotenv": "^16.3.1",
+    "ethers": "^5.7.2",
+    "hardhat": "^2.19.4",
+    "node-telegram-bot-api": "^0.64.0",
+    "fs-extra": "^11.2.0",
+    "axios": "^1.6.3"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "chai": "^4.3.10",
+    "ethereum-waffle": "^4.0.10",
+    "eslint": "^8.56.0"
+  },
+  "keywords": [
+    "arbitrage",
+    "polygon",
+    "defi",
+    "bot",
+    "uniswap",
+    "sushiswap",
+    "quickswap",
+    "ethereum",
+    "trading"
+  ],
+  "author": "Polygon Arbitrage Bot Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/polygon-arbitrage-bot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/polygon-arbitrage-bot/issues"
+  },
+  "homepage": "https://github.com/your-username/polygon-arbitrage-bot#readme"
+}
