@@ -20,23 +20,22 @@
     "docker:stop": "docker-compose down",
     "docker:logs": "docker-compose logs -f",
     "lint": "eslint scripts/ --fix",
-    "validate": "node scripts/validate-config.js"
+    "validate": "node scripts/validate-config.js",
+    "install:force": "npm install --force"
   },
   "dependencies": {
-    "@nomiclabs/hardhat-ethers": "^2.2.3",
-    "@nomiclabs/hardhat-waffle": "^2.0.6",
-    "@openzeppelin/contracts": "^4.9.5",
+    "ethers": "^6.13.4",
+    "hardhat": "^2.22.0",
     "dotenv": "^16.3.1",
-    "ethers": "^5.7.2",
-    "hardhat": "^2.19.4",
     "node-telegram-bot-api": "^0.64.0",
     "fs-extra": "^11.2.0",
     "axios": "^1.6.3"
   },
   "devDependencies": {
-    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@nomicfoundation/hardhat-ethers": "^3.0.8",
+    "@openzeppelin/contracts": "^5.0.2",
     "chai": "^4.3.10",
-    "ethereum-waffle": "^4.0.10",
     "eslint": "^8.56.0"
   },
   "keywords": [
@@ -53,8 +52,8 @@
   "author": "Polygon Arbitrage Bot Team",
   "license": "MIT",
   "engines": {
-    "node": ">=16.0.0",
-    "npm": ">=8.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
   },
   "repository": {
     "type": "git",

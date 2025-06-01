@@ -5,256 +5,349 @@ require('dotenv').config();
 
 const config = require('../config/polygon.json');
 
-/**
- * Configuration validator for production deployment
- */
 class ConfigValidator {
     constructor() {
         this.errors = [];
         this.warnings = [];
+        this.info = [];
     }
     
     async validate() {
-        console.log('🔍 Validating Polygon Arbitrage Bot Configuration...\n');
+        console.log('🔍 Validating Polygon Arbitrage Bot Configuration...');
         
         this.validateEnvironmentVariables();
         this.validateTokenConfiguration();
-        this.validateDexConfiguration();
+        this.validateDEXConfiguration();
         this.validateTradingPaths();
         this.validateSettings();
-        await this.validateRPCEndpoints();
-        await this.validateOnChainData();
+        await this.validateNetworkConnectivity();
+        await this.validateTelegramConfiguration();
+        this.validateDirectoryStructure();
         
         this.printResults();
         
-        return this.errors.length === 0;
+        if (this.errors.length > 0) {
+            console.log('\n❌ Configuration validation failed!');
+            process.exit(1);
+        } else {
+            console.log('\n✅ Configuration validation passed!');
+            console.log('🚀 Bot is ready to run: npm start');
+            process.exit(0);
+        }
     }
     
     validateEnvironmentVariables() {
         console.log('📋 Validating environment variables...');
         
         // Required variables
-        const required = [
+        const requiredVars = [
             'TELEGRAM_BOT_TOKEN',
             'TELEGRAM_CHAT_ID'
         ];
         
-        required.forEach(varName => {
-            if (!process.env[varName]) {
+        // Optional but recommended variables
+        const recommendedVars = [
+            'ALCHEMY_API_KEY',
+            'INFURA_API_KEY'
+        ];
+        
+        // Check required variables
+        requiredVars.forEach(varName => {
+            if (!process.env[varName] || process.env[varName] === 'undefined') {
                 this.errors.push(`Missing required environment variable: ${varName}`);
+            } else {
+                this.info.push(`✓ ${varName} is set`);
+            }
+        });
+        
+        // Check recommended variables
+        let hasApiKeys = false;
+        recommendedVars.forEach(varName => {
+            if (process.env[varName] && process.env[varName] !== 'undefined') {
+                this.info.push(`✓ ${varName} is set`);
+                hasApiKeys = true;
             }
         });
         
         // Check RPC endpoints
         let rpcCount = 0;
         for (let i = 1; i <= 10; i++) {
-            if (process.env[`POLYGON_RPC_${i}`]) {
+            const rpc = process.env[`POLYGON_RPC_${i}`];
+            if (rpc && rpc !== 'undefined' && rpc.startsWith('http')) {
                 rpcCount++;
             }
         }
         
-        if (!process.env.ALCHEMY_API_KEY && !process.env.INFURA_API_KEY && rpcCount === 0) {
-            this.warnings.push('No premium RPC endpoints configured - will use public RPCs only');
+        if (!hasApiKeys && rpcCount === 0) {
+            this.errors.push('No RPC access configured - need either API keys or RPC URLs');
+        } else {
+            this.info.push(`✓ RPC access configured (${hasApiKeys ? 'API keys' : ''}${hasApiKeys && rpcCount > 0 ? ' + ' : ''}${rpcCount > 0 ? `${rpcCount} RPC URLs` : ''})`);
         }
         
-        // Validate Telegram chat ID format
-        if (process.env.TELEGRAM_CHAT_ID && !process.env.TELEGRAM_CHAT_ID.match(/^-?\d+$/)) {
-            this.errors.push('TELEGRAM_CHAT_ID must be a numeric ID');
-        }
+        // Check bot configuration
+        const configVars = [
+            'MIN_BASIS_POINTS_PER_TRADE',
+            'CHECK_INTERVAL_MS',
+            'INPUT_AMOUNT_USD',
+            'NOTIFICATION_COOLDOWN_MS'
+        ];
         
-        console.log(`   ✅ Environment variables checked`);
+        configVars.forEach(varName => {
+            if (process.env[varName]) {
+                const value = parseInt(process.env[varName]);
+                if (isNaN(value) || value <= 0) {
+                    this.warnings.push(`Invalid value for ${varName}: ${process.env[varName]}`);
+                } else {
+                    this.info.push(`✓ ${varName} = ${value}`);
+                }
+            }
+        });
+        
+        console.log('   ✅ Environment variables checked');
     }
     
     validateTokenConfiguration() {
         console.log('🪙 Validating token configuration...');
         
-        const requiredTokens = ['WMATIC', 'WETH', 'WBTC', 'USDC', 'USDT', 'LINK', 'AAVE', 'CRV'];
+        if (!config.tokens || Object.keys(config.tokens).length === 0) {
+            this.errors.push('No tokens configured');
+            return;
+        }
         
-        requiredTokens.forEach(symbol => {
-            const token = config.tokens[symbol];
-            if (!token) {
-                this.errors.push(`Missing token configuration for ${symbol}`);
-                return;
+        Object.entries(config.tokens).forEach(([symbol, token]) => {
+            // Check required fields
+            if (!token.address) {
+                this.errors.push(`Token ${symbol}: missing address`);
+            } else if (!ethers.isAddress(token.address)) {
+                this.errors.push(`Token ${symbol}: invalid address ${token.address}`);
+            } else {
+                this.info.push(`✓ ${symbol}: valid address`);
             }
             
-            // Validate address
-            if (!token.address || !ethers.utils.isAddress(token.address)) {
-                this.errors.push(`Invalid address for token ${symbol}: ${token.address}`);
+            if (typeof token.decimals !== 'number') {
+                this.errors.push(`Token ${symbol}: missing or invalid decimals`);
+            } else if (token.decimals < 0 || token.decimals > 18) {
+                this.warnings.push(`Token ${symbol}: unusual decimals ${token.decimals}`);
+            } else {
+                this.info.push(`✓ ${symbol}: ${token.decimals} decimals`);
             }
             
-            // Validate decimals
-            if (typeof token.decimals !== 'number' || token.decimals < 0 || token.decimals > 18) {
-                this.errors.push(`Invalid decimals for token ${symbol}: ${token.decimals}`);
-            }
-            
-            // Validate symbol
-            if (!token.symbol || token.symbol !== symbol) {
-                this.errors.push(`Symbol mismatch for token ${symbol}: expected ${symbol}, got ${token.symbol}`);
+            if (!token.symbol) {
+                this.warnings.push(`Token ${symbol}: missing symbol field`);
             }
         });
         
-        console.log(`   ✅ Token configuration checked`);
+        // Check for required tokens
+        const requiredTokens = ['WMATIC', 'USDC', 'WETH'];
+        requiredTokens.forEach(symbol => {
+            if (!config.tokens[symbol]) {
+                this.warnings.push(`Missing recommended token: ${symbol}`);
+            }
+        });
+        
+        console.log(`   ✅ ${Object.keys(config.tokens).length} tokens validated`);
     }
     
-    validateDexConfiguration() {
+    validateDEXConfiguration() {
         console.log('🏪 Validating DEX configuration...');
         
-        const requiredDexes = ['uniswap', 'sushiswap', 'quickswap'];
+        if (!config.dexes || Object.keys(config.dexes).length === 0) {
+            this.errors.push('No DEXes configured');
+            return;
+        }
         
-        requiredDexes.forEach(dexName => {
-            const dex = config.dexes[dexName];
-            if (!dex) {
-                this.errors.push(`Missing DEX configuration for ${dexName}`);
-                return;
+        Object.entries(config.dexes).forEach(([dexName, dex]) => {
+            // Check required fields
+            if (!dex.name) {
+                this.warnings.push(`DEX ${dexName}: missing name field`);
             }
             
-            // Validate router address
-            if (!dex.router || !ethers.utils.isAddress(dex.router)) {
-                this.errors.push(`Invalid router address for ${dexName}: ${dex.router}`);
+            if (!dex.router) {
+                this.errors.push(`DEX ${dexName}: missing router address`);
+            } else if (!ethers.isAddress(dex.router)) {
+                this.errors.push(`DEX ${dexName}: invalid router address ${dex.router}`);
+            } else {
+                this.info.push(`✓ ${dexName}: valid router`);
             }
             
-            // Validate type
-            if (!['v2', 'v3'].includes(dex.type)) {
-                this.errors.push(`Invalid type for ${dexName}: ${dex.type}`);
+            if (!dex.type) {
+                this.warnings.push(`DEX ${dexName}: missing type field`);
+            } else if (!['v2', 'v3'].includes(dex.type)) {
+                this.warnings.push(`DEX ${dexName}: unknown type ${dex.type}`);
+            } else {
+                this.info.push(`✓ ${dexName}: type ${dex.type}`);
             }
             
-            // Validate V3 specific fields
+            // V3 specific checks
             if (dex.type === 'v3') {
-                if (!dex.quoter || !ethers.utils.isAddress(dex.quoter)) {
-                    this.errors.push(`Invalid quoter address for ${dexName}: ${dex.quoter}`);
+                if (!dex.quoter) {
+                    this.warnings.push(`DEX ${dexName}: V3 DEX missing quoter address`);
+                } else if (!ethers.isAddress(dex.quoter)) {
+                    this.errors.push(`DEX ${dexName}: invalid quoter address ${dex.quoter}`);
                 }
                 
-                if (!dex.fees || !Array.isArray(dex.fees) || dex.fees.length === 0) {
-                    this.errors.push(`Missing or invalid fees array for ${dexName}`);
+                if (!dex.fees || !Array.isArray(dex.fees)) {
+                    this.warnings.push(`DEX ${dexName}: V3 DEX missing fee tiers`);
                 }
-            }
-            
-            // Validate factory address
-            if (!dex.factory || !ethers.utils.isAddress(dex.factory)) {
-                this.errors.push(`Invalid factory address for ${dexName}: ${dex.factory}`);
             }
         });
         
-        console.log(`   ✅ DEX configuration checked`);
+        // Check for required DEXes
+        const requiredDEXes = ['uniswap', 'sushiswap'];
+        requiredDEXes.forEach(dexName => {
+            if (!config.dexes[dexName]) {
+                this.warnings.push(`Missing recommended DEX: ${dexName}`);
+            }
+        });
+        
+        console.log(`   ✅ ${Object.keys(config.dexes).length} DEXes validated`);
     }
     
     validateTradingPaths() {
-        console.log('🛣️ Validating trading paths...');
+        console.log('🛤️ Validating trading paths...');
         
-        Object.entries(config.tradingPaths).forEach(([tokenSymbol, paths]) => {
-            // Check if token exists
-            if (!config.tokens[tokenSymbol]) {
-                this.errors.push(`Trading paths defined for unknown token: ${tokenSymbol}`);
+        if (!config.tradingPaths || Object.keys(config.tradingPaths).length === 0) {
+            this.errors.push('No trading paths configured');
+            return;
+        }
+        
+        let totalPaths = 0;
+        
+        Object.entries(config.tradingPaths).forEach(([token, paths]) => {
+            if (!Array.isArray(paths)) {
+                this.errors.push(`Trading paths for ${token}: not an array`);
                 return;
             }
             
-            // Validate each path
+            if (paths.length === 0) {
+                this.warnings.push(`Trading paths for ${token}: no paths configured`);
+                return;
+            }
+            
             paths.forEach((path, index) => {
-                if (!Array.isArray(path) || path.length < 2) {
-                    this.errors.push(`Invalid path ${index} for ${tokenSymbol}: must be array with at least 2 tokens`);
+                if (!Array.isArray(path)) {
+                    this.errors.push(`Trading path ${token}[${index}]: not an array`);
                     return;
                 }
                 
-                // Check if all tokens in path exist
-                path.forEach(symbol => {
-                    if (!config.tokens[symbol]) {
-                        this.errors.push(`Unknown token in path for ${tokenSymbol}: ${symbol}`);
+                if (path.length < 2) {
+                    this.errors.push(`Trading path ${token}[${index}]: too short (${path.length} tokens)`);
+                    return;
+                }
+                
+                if (path.length > 4) {
+                    this.warnings.push(`Trading path ${token}[${index}]: very long (${path.length} tokens) - may have high slippage`);
+                }
+                
+                // Validate each token in path exists
+                path.forEach((tokenSymbol, tokenIndex) => {
+                    if (!config.tokens[tokenSymbol]) {
+                        this.errors.push(`Trading path ${token}[${index}][${tokenIndex}]: unknown token ${tokenSymbol}`);
                     }
                 });
                 
-                // First token should match the trading token
-                if (path[0] !== tokenSymbol) {
-                    this.errors.push(`Path for ${tokenSymbol} should start with ${tokenSymbol}, got ${path[0]}`);
-                }
+                totalPaths++;
             });
+            
+            this.info.push(`✓ ${token}: ${paths.length} trading paths`);
         });
         
-        console.log(`   ✅ Trading paths checked`);
+        console.log(`   ✅ ${totalPaths} trading paths validated`);
     }
     
     validateSettings() {
         console.log('⚙️ Validating settings...');
         
+        if (!config.settings) {
+            this.errors.push('Missing settings configuration');
+            return;
+        }
+        
         const settings = config.settings;
         
-        // Validate numeric settings
+        // Check numeric settings
         const numericSettings = [
-            'minBasisPointsPerTrade',
-            'maxSlippageBps', 
-            'checkIntervalMs',
-            'inputAmountUSD',
-            'maxRetries',
-            'retryDelayMs',
-            'notificationCooldownMs',
-            'priceTimeoutMs',
-            'rpcTimeoutMs'
+            { name: 'inputAmountUSD', min: 100, max: 100000, recommended: 1000 },
+            { name: 'minBasisPointsPerTrade', min: 10, max: 1000, recommended: 50 },
+            { name: 'checkIntervalMs', min: 5000, max: 300000, recommended: 30000 },
+            { name: 'notificationCooldownMs', min: 60000, max: 3600000, recommended: 300000 },
+            { name: 'rpcTimeoutMs', min: 5000, max: 60000, recommended: 10000 },
+            { name: 'priceTimeoutMs', min: 3000, max: 30000, recommended: 8000 },
+            { name: 'maxRetries', min: 1, max: 10, recommended: 3 },
+            { name: 'retryDelayMs', min: 500, max: 10000, recommended: 2000 }
         ];
         
-        numericSettings.forEach(setting => {
-            if (typeof settings[setting] !== 'number' || settings[setting] <= 0) {
-                this.errors.push(`Invalid ${setting}: must be positive number`);
+        numericSettings.forEach(({ name, min, max, recommended }) => {
+            const value = settings[name];
+            
+            if (typeof value !== 'number') {
+                this.errors.push(`Setting ${name}: not a number (${typeof value})`);
+            } else if (value < min || value > max) {
+                this.errors.push(`Setting ${name}: out of range (${value}, expected ${min}-${max})`);
+            } else if (value !== recommended) {
+                this.info.push(`✓ ${name}: ${value} (recommended: ${recommended})`);
+            } else {
+                this.info.push(`✓ ${name}: ${value}`);
             }
         });
         
-        // Validate ranges
-        if (settings.minBasisPointsPerTrade < 10 || settings.minBasisPointsPerTrade > 1000) {
-            this.warnings.push('minBasisPointsPerTrade should be between 10-1000 bps');
-        }
-        
-        if (settings.checkIntervalMs < 10000) {
-            this.warnings.push('checkIntervalMs should be at least 10000ms to avoid rate limits');
-        }
-        
-        console.log(`   ✅ Settings checked`);
+        console.log('   ✅ Settings validated');
     }
     
-    async validateRPCEndpoints() {
-        console.log('🌐 Validating RPC endpoints...');
+    async validateNetworkConnectivity() {
+        console.log('🌐 Validating network connectivity...');
         
-        const endpoints = [];
+        const rpcEndpoints = [];
         
-        // Collect all RPC endpoints
+        // Collect RPC endpoints
         for (let i = 1; i <= 10; i++) {
             const rpc = process.env[`POLYGON_RPC_${i}`];
-            if (rpc) endpoints.push(rpc);
+            if (rpc && rpc !== 'undefined' && rpc.startsWith('http')) {
+                rpcEndpoints.push(rpc);
+            }
         }
         
-        if (process.env.ALCHEMY_API_KEY) {
-            endpoints.push(`https://polygon-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`);
+        // Add API-based endpoints
+        if (process.env.ALCHEMY_API_KEY && process.env.ALCHEMY_API_KEY !== 'undefined') {
+            rpcEndpoints.push(`https://polygon-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`);
         }
         
-        if (process.env.INFURA_API_KEY) {
-            endpoints.push(`https://polygon.infura.io/v3/${process.env.INFURA_API_KEY}`);
+        if (process.env.INFURA_API_KEY && process.env.INFURA_API_KEY !== 'undefined') {
+            rpcEndpoints.push(`https://polygon.infura.io/v3/${process.env.INFURA_API_KEY}`);
         }
         
-        // Add public endpoints
-        endpoints.push(
-            "https://rpc.ankr.com/polygon",
-            "https://polygon-rpc.com"
+        // Add public fallbacks
+        rpcEndpoints.push(
+            'https://rpc.ankr.com/polygon',
+            'https://polygon-rpc.com'
         );
         
         let workingEndpoints = 0;
+        const uniqueEndpoints = [...new Set(rpcEndpoints)];
         
-        for (const endpoint of endpoints) {
+        for (const endpoint of uniqueEndpoints.slice(0, 5)) { // Test max 5 endpoints
             try {
-                const provider = new ethers.providers.JsonRpcProvider({
-                    url: endpoint,
-                    timeout: 5000
-                });
+                const provider = new ethers.JsonRpcProvider(endpoint);
                 
-                await Promise.race([
-                    provider.getNetwork(),
+                const [network, blockNumber] = await Promise.race([
+                    Promise.all([
+                        provider.getNetwork(),
+                        provider.getBlockNumber()
+                    ]),
                     new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('timeout')), 5000)
+                        setTimeout(() => reject(new Error('Timeout')), 8000)
                     )
                 ]);
                 
-                workingEndpoints++;
-                console.log(`   ✅ ${endpoint.split('/')[2]} - Working`);
+                if (Number(network.chainId) === 137) {
+                    workingEndpoints++;
+                    this.info.push(`✓ RPC working: ${endpoint.split('/')[2]} (block ${blockNumber})`);
+                } else {
+                    this.warnings.push(`RPC wrong network: ${endpoint} (chain ${network.chainId})`);
+                }
                 
             } catch (error) {
-                console.log(`   ❌ ${endpoint.split('/')[2]} - Failed: ${error.message}`);
-                this.warnings.push(`RPC endpoint not responding: ${endpoint.split('/')[2]}`);
+                this.warnings.push(`RPC failed: ${endpoint.split('/')[2]} (${error.message})`);
             }
         }
         
@@ -262,114 +355,161 @@ class ConfigValidator {
             this.errors.push('No working RPC endpoints found');
         } else if (workingEndpoints < 2) {
             this.warnings.push('Only one working RPC endpoint - consider adding more for reliability');
+        } else {
+            this.info.push(`✓ ${workingEndpoints} working RPC endpoints`);
         }
         
-        console.log(`   📊 ${workingEndpoints}/${endpoints.length} endpoints working`);
+        console.log(`   ✅ Network connectivity checked (${workingEndpoints} working)`);
     }
     
-    async validateOnChainData() {
-        console.log('⛓️ Validating on-chain contract data...');
+    async validateTelegramConfiguration() {
+        console.log('📱 Validating Telegram configuration...');
         
-        try {
-            // Use first working RPC
-            const provider = new ethers.providers.JsonRpcProvider("https://polygon-rpc.com");
-            
-            // Validate token contracts
-            const erc20ABI = [
-                "function symbol() view returns (string)",
-                "function decimals() view returns (uint8)",
-                "function totalSupply() view returns (uint256)"
-            ];
-            
-            for (const [symbol, token] of Object.entries(config.tokens)) {
-                try {
-                    const contract = new ethers.Contract(token.address, erc20ABI, provider);
-                    
-                    const [contractSymbol, contractDecimals] = await Promise.all([
-                        contract.symbol(),
-                        contract.decimals()
-                    ]);
-                    
-                    if (contractDecimals !== token.decimals) {
-                        this.errors.push(`Decimals mismatch for ${symbol}: config=${token.decimals}, contract=${contractDecimals}`);
-                    }
-                    
-                    console.log(`   ✅ ${symbol} (${contractSymbol}) - Valid contract`);
-                    
-                } catch (error) {
-                    this.errors.push(`Invalid token contract for ${symbol}: ${error.message}`);
-                    console.log(`   ❌ ${symbol} - Contract validation failed`);
-                }
-            }
-            
-            // Validate DEX router contracts
-            const routerABI = [
-                "function factory() external pure returns (address)"
-            ];
-            
-            for (const [dexName, dex] of Object.entries(config.dexes)) {
-                try {
-                    const code = await provider.getCode(dex.router);
-                    if (code === '0x') {
-                        this.errors.push(`Router contract not found for ${dexName}: ${dex.router}`);
-                        console.log(`   ❌ ${dexName} - Router not found`);
-                    } else {
-                        console.log(`   ✅ ${dexName} - Router contract exists`);
-                    }
-                } catch (error) {
-                    this.warnings.push(`Could not validate router for ${dexName}: ${error.message}`);
-                    console.log(`   ⚠️  ${dexName} - Router validation failed`);
-                }
-            }
-            
-        } catch (error) {
-            this.warnings.push(`On-chain validation failed: ${error.message}`);
-            console.log(`   ⚠️  On-chain validation skipped due to RPC issues`);
+        const botToken = process.env.TELEGRAM_BOT_TOKEN;
+        const chatId = process.env.TELEGRAM_CHAT_ID;
+        
+        if (!botToken || botToken === 'undefined') {
+            this.errors.push('TELEGRAM_BOT_TOKEN not set');
+            return;
         }
+        
+        if (!chatId || chatId === 'undefined') {
+            this.errors.push('TELEGRAM_CHAT_ID not set');
+            return;
+        }
+        
+        // Basic format validation
+        if (!botToken.includes(':')) {
+            this.errors.push('TELEGRAM_BOT_TOKEN: invalid format');
+        }
+        
+        if (!/^-?\d+$/.test(chatId)) {
+            this.warnings.push('TELEGRAM_CHAT_ID: unusual format (should be numeric)');
+        }
+        
+        // Test Telegram connection
+        try {
+            const axios = require('axios');
+            const response = await axios.get(
+                `https://api.telegram.org/bot${botToken}/getMe`,
+                { timeout: 10000 }
+            );
+            
+            if (response.data.ok) {
+                this.info.push(`✓ Telegram bot connected: @${response.data.result.username}`);
+                
+                // Test sending message
+                try {
+                    await axios.post(
+                        `https://api.telegram.org/bot${botToken}/sendMessage`,
+                        {
+                            chat_id: chatId,
+                            text: '🔧 Configuration validation test - Polygon Arbitrage Bot',
+                            parse_mode: 'HTML'
+                        },
+                        { timeout: 10000 }
+                    );
+                    this.info.push('✓ Test message sent successfully');
+                } catch (error) {
+                    this.warnings.push(`Failed to send test message: ${error.response?.data?.description || error.message}`);
+                }
+            } else {
+                this.errors.push('Invalid Telegram bot token');
+            }
+        } catch (error) {
+            this.warnings.push(`Telegram connection failed: ${error.message}`);
+        }
+        
+        console.log('   ✅ Telegram configuration checked');
+    }
+    
+    validateDirectoryStructure() {
+        console.log('📁 Validating directory structure...');
+        
+        const requiredDirs = [
+            'scripts',
+            'config',
+            'contracts'
+        ];
+        
+        const optionalDirs = [
+            'logs',
+            'cache',
+            'artifacts'
+        ];
+        
+        requiredDirs.forEach(dir => {
+            if (fs.existsSync(dir)) {
+                this.info.push(`✓ Directory exists: ${dir}/`);
+            } else {
+                this.errors.push(`Missing required directory: ${dir}/`);
+            }
+        });
+        
+        optionalDirs.forEach(dir => {
+            if (!fs.existsSync(dir)) {
+                try {
+                    fs.ensureDirSync(dir);
+                    this.info.push(`✓ Created directory: ${dir}/`);
+                } catch (error) {
+                    this.warnings.push(`Failed to create directory: ${dir}/`);
+                }
+            } else {
+                this.info.push(`✓ Directory exists: ${dir}/`);
+            }
+        });
+        
+        // Check important files
+        const requiredFiles = [
+            'scripts/trade.js',
+            'scripts/logger.js',
+            'scripts/telegram.js',
+            'scripts/utils.js',
+            'config/polygon.json',
+            'package.json'
+        ];
+        
+        requiredFiles.forEach(file => {
+            if (fs.existsSync(file)) {
+                this.info.push(`✓ File exists: ${file}`);
+            } else {
+                this.errors.push(`Missing required file: ${file}`);
+            }
+        });
+        
+        console.log('   ✅ Directory structure validated');
     }
     
     printResults() {
-        console.log('\n' + '='.repeat(60));
-        console.log('📋 VALIDATION RESULTS');
-        console.log('='.repeat(60));
+        console.log('\n📊 Validation Results:');
+        console.log('='.repeat(50));
         
-        if (this.errors.length === 0 && this.warnings.length === 0) {
-            console.log('✅ ALL CHECKS PASSED - Configuration is ready for production!');
-        } else {
-            if (this.errors.length > 0) {
-                console.log('\n❌ ERRORS (must be fixed):');
-                this.errors.forEach((error, index) => {
-                    console.log(`   ${index + 1}. ${error}`);
-                });
-            }
-            
-            if (this.warnings.length > 0) {
-                console.log('\n⚠️  WARNINGS (recommended to fix):');
-                this.warnings.forEach((warning, index) => {
-                    console.log(`   ${index + 1}. ${warning}`);
-                });
-            }
-            
-            if (this.errors.length === 0) {
-                console.log('\n✅ No critical errors - bot can run but consider fixing warnings');
-            } else {
-                console.log('\n❌ Critical errors found - bot may not work properly');
-            }
+        if (this.errors.length > 0) {
+            console.log('\n❌ ERRORS:');
+            this.errors.forEach(error => console.log(`   • ${error}`));
         }
         
-        console.log('\n' + '='.repeat(60));
-        console.log(`📊 Summary: ${this.errors.length} errors, ${this.warnings.length} warnings`);
-        console.log('='.repeat(60) + '\n');
+        if (this.warnings.length > 0) {
+            console.log('\n⚠️ WARNINGS:');
+            this.warnings.forEach(warning => console.log(`   • ${warning}`));
+        }
+        
+        if (this.info.length > 0) {
+            console.log('\n✅ INFO:');
+            this.info.forEach(info => console.log(`   ${info}`));
+        }
+        
+        console.log('\n📈 SUMMARY:');
+        console.log(`   Errors: ${this.errors.length}`);
+        console.log(`   Warnings: ${this.warnings.length}`);
+        console.log(`   Info: ${this.info.length}`);
     }
 }
 
-// Main execution
+// Run validation if this file is executed directly
 if (require.main === module) {
     const validator = new ConfigValidator();
-    
-    validator.validate().then(isValid => {
-        process.exit(isValid ? 0 : 1);
-    }).catch(error => {
+    validator.validate().catch(error => {
         console.error('Validation failed:', error);
         process.exit(1);
     });

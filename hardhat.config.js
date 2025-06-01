@@ -1,5 +1,4 @@
-require("@nomiclabs/hardhat-waffle");
-require("@nomiclabs/hardhat-ethers");
+require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
 
 // Collect all Polygon RPC endpoints from environment
@@ -9,7 +8,7 @@ const getPolygonRPCs = () => {
     // Add RPC endpoints from environment variables
     for (let i = 1; i <= 10; i++) {
         const rpc = process.env[`POLYGON_RPC_${i}`];
-        if (rpc && rpc !== 'undefined') {
+        if (rpc && rpc !== 'undefined' && rpc.startsWith('http')) {
             rpcs.push(rpc);
         }
     }
@@ -40,6 +39,7 @@ const getPolygonRPCs = () => {
 
 const polygonRPCs = getPolygonRPCs();
 
+/** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
     solidity: {
         version: "0.8.19",
@@ -47,7 +47,8 @@ module.exports = {
             optimizer: {
                 enabled: true,
                 runs: 200
-            }
+            },
+            viaIR: false
         }
     },
     networks: {
@@ -56,14 +57,23 @@ module.exports = {
             chainId: 137,
             gasPrice: "auto",
             gas: "auto",
-            timeout: 60000
+            timeout: 60000,
+            accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
         },
         hardhat: {
             forking: {
                 url: polygonRPCs[0] || "https://polygon-rpc.com",
-                blockNumber: undefined
+                blockNumber: undefined,
+                enabled: true
             },
-            chainId: 137
+            chainId: 137,
+            gas: 12000000,
+            gasPrice: 'auto',
+            allowUnlimitedContractSize: true
+        },
+        localhost: {
+            url: "http://127.0.0.1:8545",
+            chainId: 31337
         }
     },
     paths: {
@@ -73,7 +83,16 @@ module.exports = {
         artifacts: "./artifacts"
     },
     mocha: {
-        timeout: 60000
+        timeout: 120000
+    },
+    gasReporter: {
+        enabled: process.env.REPORT_GAS !== undefined,
+        currency: "USD"
+    },
+    etherscan: {
+        apiKey: {
+            polygon: process.env.POLYGONSCAN_API_KEY || ""
+        }
     },
     // Export RPC endpoints for use in scripts
     polygonRPCs

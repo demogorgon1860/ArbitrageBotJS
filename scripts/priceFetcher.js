@@ -6,6 +6,8 @@ const { formatTokenAmount, retryWithBackoff } = require('./utils');
 class PriceFetcher {
     constructor(provider) {
         this.provider = provider;
+        this.priceCache = new Map(); // Cache for USD prices
+        this.cacheExpiry = 60000; // 1 minute cache
         this.initializeContracts();
     }
     
@@ -19,6 +21,57 @@ class PriceFetcher {
         this.v3QuoterABI = [
             "function quoteExactInputSingle(address tokenIn, address tokenOut, uint24 fee, uint256 amountIn, uint160 sqrtPriceLimitX96) external returns (uint256 amountOut)"
         ];
+    }
+    
+    /**
+     * Get cached USD price for token (internal method to avoid circular dependencies)
+     */
+    async getCachedTokenPriceUSD(tokenSymbol) {
+        const cacheKey = `${tokenSymbol}_usd`;
+        const cached = this.priceCache.get(cacheKey);
+        
+        if (cached && Date.now() - cached.timestamp < this.cacheExpiry) {
+            return cached.price;
+        }
+        
+        try {
+            // Try to get from utils if available, but don't fail if not
+            let price;
+            try {
+                const { getTokenPriceUSD } = require('./utils');
+                price = await getTokenPriceUSD(tokenSymbol);
+            } catch (error) {
+                // Fallback to internal price estimation
+                price = this.getFallbackPrice(tokenSymbol);
+            }
+            
+            this.priceCache.set(cacheKey, {
+                price,
+                timestamp: Date.now()
+            });
+            return price;
+        } catch (error) {
+            logger.logError(`Failed to get USD price for ${tokenSymbol}`, error);
+            // Return cached price if available, even if expired
+            return cached ? cached.price : this.getFallbackPrice(tokenSymbol);
+        }
+    }
+    
+    /**
+     * Get fallback price if all else fails
+     */
+    getFallbackPrice(tokenSymbol) {
+        const fallbackPrices = {
+            'USDC': 1,
+            'USDT': 1,
+            'WETH': 2000,
+            'WBTC': 35000,
+            'WMATIC': 1,
+            'LINK': 15,
+            'AAVE': 80,
+            'CRV': 0.5
+        };
+        return fallbackPrices[tokenSymbol] || 1;
     }
     
     /**
@@ -57,6 +110,21 @@ class PriceFetcher {
                 };
             }
             
+            // Add enhanced slippage estimation
+            if (bestPriceData.router && bestPriceData.pathAddresses) {
+                try {
+                    const slippage = await this.calculateRealSlippage(
+                        bestPriceData.router,
+                        bestPriceData.pathAddresses,
+                        bestPriceData.inputAmount
+                    );
+                    bestPriceData.estimatedSlippage = slippage;
+                } catch (error) {
+                    logger.logDebug('Failed to calculate slippage', error.message);
+                    bestPriceData.estimatedSlippage = this.getDefaultSlippage(tokenSymbol, dexName);
+                }
+            }
+            
             return {
                 ...bestPriceData,
                 dex: dexName,
@@ -77,6 +145,67 @@ class PriceFetcher {
     }
     
     /**
+     * Enhanced slippage calculation
+     */
+    async calculateRealSlippage(router, path, amountIn) {
+        try {
+            // Get amounts for different trade sizes to estimate slippage
+            const baseAmount = ethers.BigNumber.from(amountIn);
+            const largerAmount = baseAmount.mul(105).div(100); // 5% larger trade
+            
+            const [baseAmounts, largerAmounts] = await Promise.allSettled([
+                router.getAmountsOut(baseAmount, path),
+                router.getAmountsOut(largerAmount, path)
+            ]);
+            
+            if (baseAmounts.status !== 'fulfilled' || largerAmounts.status !== 'fulfilled') {
+                throw new Error('Failed to get amounts for slippage calculation');
+            }
+            
+            const baseOutputAmount = baseAmounts.value[baseAmounts.value.length - 1];
+            const largerOutputAmount = largerAmounts.value[largerAmounts.value.length - 1];
+            
+            // Calculate price impact
+            const expectedLargerOutput = baseOutputAmount.mul(105).div(100);
+            const actualSlippage = expectedLargerOutput.sub(largerOutputAmount);
+            const slippagePercentage = actualSlippage.mul(10000).div(expectedLargerOutput);
+            
+            return Math.max(0.1, parseInt(slippagePercentage.toString()) / 100); // Minimum 0.1%
+            
+        } catch (error) {
+            logger.logDebug('Slippage calculation failed, using default', error.message);
+            return 0.3; // Default 0.3% slippage
+        }
+    }
+    
+    /**
+     * Get default slippage for token/dex combination
+     */
+    getDefaultSlippage(tokenSymbol, dexName) {
+        const tokenSlippage = {
+            'USDC': 0.1,
+            'USDT': 0.1,
+            'WETH': 0.2,
+            'WBTC': 0.25,
+            'WMATIC': 0.15,
+            'LINK': 0.3,
+            'AAVE': 0.4,
+            'CRV': 0.5
+        };
+        
+        const dexMultiplier = {
+            'uniswap': 0.9,
+            'sushiswap': 1.0,
+            'quickswap': 1.1
+        };
+        
+        const baseSlippage = tokenSlippage[tokenSymbol] || 0.3;
+        const multiplier = dexMultiplier[dexName] || 1.0;
+        
+        return baseSlippage * multiplier;
+    }
+    
+    /**
      * Get real V2 price using router.getAmountsOut
      */
     async getV2RealPrice(token, dex, paths, inputAmountUSD) {
@@ -86,6 +215,8 @@ class PriceFetcher {
             let bestPrice = 0;
             let bestPath = null;
             let bestAmounts = null;
+            let bestInputAmount = null;
+            let bestPathAddresses = null;
             
             for (const path of paths) {
                 try {
@@ -93,8 +224,8 @@ class PriceFetcher {
                     const tokenAddresses = this.pathToAddresses(path);
                     if (!tokenAddresses) continue;
                     
-                    // Calculate real input amount in token units
-                    const inputAmount = this.calculateRealInputAmount(path[0], inputAmountUSD);
+                    // Calculate real input amount in token units using oracle prices
+                    const inputAmount = await this.calculateRealInputAmount(path[0], inputAmountUSD);
                     if (inputAmount === '0') continue;
                     
                     // Get real amounts from router with timeout
@@ -111,14 +242,16 @@ class PriceFetcher {
                     const outputAmount = amounts[amounts.length - 1];
                     const outputToken = config.tokens[path[path.length - 1]];
                     
-                    // Convert to USD price
-                    const outputValueUSD = this.tokenAmountToUSD(outputAmount, outputToken, path[path.length - 1]);
+                    // Convert to USD price using oracle
+                    const outputValueUSD = await this.tokenAmountToUSD(outputAmount, outputToken, path[path.length - 1]);
                     const price = outputValueUSD / inputAmountUSD;
                     
                     if (price > bestPrice && price > 0) {
                         bestPrice = price;
                         bestPath = path;
                         bestAmounts = amounts;
+                        bestInputAmount = inputAmount;
+                        bestPathAddresses = tokenAddresses;
                     }
                     
                     logger.logDebug(`V2 price for ${path.join('->')} on ${dex.name}`, {
@@ -137,7 +270,10 @@ class PriceFetcher {
                 price: bestPrice,
                 path: bestPath,
                 method: 'v2_getAmountsOut',
-                rawAmounts: bestAmounts
+                rawAmounts: bestAmounts,
+                inputAmount: bestInputAmount,
+                pathAddresses: bestPathAddresses,
+                router: router
             } : null;
             
         } catch (error) {
@@ -157,6 +293,8 @@ class PriceFetcher {
             let bestPrice = 0;
             let bestPath = null;
             let bestFee = null;
+            let bestInputAmount = null;
+            let bestPathAddresses = null;
             
             // Focus on direct pairs for V3 (more reliable)
             const directPaths = paths.filter(path => path.length === 2);
@@ -166,7 +304,7 @@ class PriceFetcher {
                     const tokenIn = config.tokens[path[0]];
                     const tokenOut = config.tokens[path[1]];
                     
-                    const inputAmount = this.calculateRealInputAmount(path[0], inputAmountUSD);
+                    const inputAmount = await this.calculateRealInputAmount(path[0], inputAmountUSD);
                     if (inputAmount === '0') continue;
                     
                     // Try different fee tiers
@@ -188,14 +326,16 @@ class PriceFetcher {
                                 )
                             ]);
                             
-                            // Calculate real price
-                            const outputValueUSD = this.tokenAmountToUSD(amountOut, tokenOut, path[1]);
+                            // Calculate real price using oracle
+                            const outputValueUSD = await this.tokenAmountToUSD(amountOut, tokenOut, path[1]);
                             const price = outputValueUSD / inputAmountUSD;
                             
                             if (price > bestPrice && price > 0) {
                                 bestPrice = price;
                                 bestPath = path;
                                 bestFee = fee;
+                                bestInputAmount = inputAmount;
+                                bestPathAddresses = [tokenIn.address, tokenOut.address];
                             }
                             
                             logger.logDebug(`V3 price for ${path.join('->')} fee ${fee} on ${dex.name}`, {
@@ -221,7 +361,9 @@ class PriceFetcher {
                 price: bestPrice,
                 path: bestPath,
                 method: 'v3_quoter',
-                fee: bestFee
+                fee: bestFee,
+                inputAmount: bestInputAmount,
+                pathAddresses: bestPathAddresses
             } : null;
             
         } catch (error) {
@@ -249,9 +391,9 @@ class PriceFetcher {
     }
     
     /**
-     * Calculate real input amount in token units (not simulated)
+     * Calculate real input amount in token units with fallback
      */
-    calculateRealInputAmount(tokenSymbol, inputAmountUSD) {
+    async calculateRealInputAmount(tokenSymbol, inputAmountUSD) {
         try {
             const token = config.tokens[tokenSymbol];
             if (!token) {
@@ -264,23 +406,27 @@ class PriceFetcher {
             if (['USDC', 'USDT'].includes(tokenSymbol)) {
                 tokenAmount = inputAmountUSD;
             } else {
-                // For other tokens, use a reasonable amount that provides good liquidity sampling
-                // These amounts are chosen to be large enough to get meaningful quotes
-                // but not so large as to cause excessive slippage
-                const inputAmounts = {
-                    'WETH': 0.5,    // 0.5 ETH ≈ $1000-2000
-                    'WBTC': 0.03,   // 0.03 BTC ≈ $1000-2000  
-                    'WMATIC': 1000, // 1000 MATIC ≈ $1000
-                    'LINK': 70,     // 70 LINK ≈ $1000
-                    'AAVE': 12,     // 12 AAVE ≈ $1000
-                    'CRV': 2000     // 2000 CRV ≈ $1000
-                };
-                
-                tokenAmount = inputAmounts[tokenSymbol] || 1;
+                // Try to get real USD price, fallback to static amounts
+                try {
+                    const tokenPriceUSD = await this.getCachedTokenPriceUSD(tokenSymbol);
+                    tokenAmount = inputAmountUSD / tokenPriceUSD;
+                } catch (error) {
+                    logger.logDebug(`Failed to get USD price for ${tokenSymbol}, using static amount`);
+                    // Fallback to static amounts as originally designed
+                    const inputAmounts = {
+                        'WETH': 0.5,    // 0.5 ETH ≈ $1000-2000
+                        'WBTC': 0.03,   // 0.03 BTC ≈ $1000-2000  
+                        'WMATIC': 1000, // 1000 MATIC ≈ $1000
+                        'LINK': 70,     // 70 LINK ≈ $1000
+                        'AAVE': 12,     // 12 AAVE ≈ $1000
+                        'CRV': 2000     // 2000 CRV ≈ $1000
+                    };
+                    tokenAmount = inputAmounts[tokenSymbol] || 1;
+                }
             }
             
             // Convert to wei/token units
-            const tokenAmountWei = ethers.utils.parseUnits(
+            const tokenAmountWei = ethers.parseUnits(
                 tokenAmount.toString(), 
                 token.decimals
             );
@@ -294,32 +440,32 @@ class PriceFetcher {
     }
     
     /**
-     * Convert token amount to USD (simplified but reasonable conversion)
+     * Convert token amount to USD using oracle prices with fallback
      */
-    tokenAmountToUSD(tokenAmount, tokenConfig, tokenSymbol) {
+    async tokenAmountToUSD(tokenAmount, tokenConfig, tokenSymbol) {
         try {
             // Convert from wei to token units
             const tokenValue = parseFloat(formatTokenAmount(tokenAmount, tokenConfig.decimals));
             
-            // Simple USD conversion based on reasonable market prices
-            // In production, you might want to use a price oracle here
-            const usdPrices = {
-                'USDC': 1,
-                'USDT': 1,
-                'WETH': 2000,   // Approximate ETH price
-                'WBTC': 35000,  // Approximate BTC price
-                'WMATIC': 1,    // Approximate MATIC price
-                'LINK': 15,     // Approximate LINK price
-                'AAVE': 80,     // Approximate AAVE price
-                'CRV': 0.5      // Approximate CRV price
-            };
-            
-            const usdPrice = usdPrices[tokenSymbol] || 1;
-            return tokenValue * usdPrice;
+            // Try to get real USD price, fallback to static
+            try {
+                const usdPrice = await this.getCachedTokenPriceUSD(tokenSymbol);
+                return tokenValue * usdPrice;
+            } catch (error) {
+                logger.logDebug(`Failed to get USD price for ${tokenSymbol}, using fallback`);
+                // Fallback to static prices
+                const tokenValue = parseFloat(formatTokenAmount(tokenAmount, tokenConfig.decimals));
+                const fallbackPrice = this.getFallbackPrice(tokenSymbol);
+                return tokenValue * fallbackPrice;
+            }
             
         } catch (error) {
             logger.logError(`Failed to convert token amount to USD for ${tokenSymbol}`, error);
-            return 0;
+            
+            // Emergency fallback
+            const tokenValue = parseFloat(formatTokenAmount(tokenAmount, tokenConfig.decimals));
+            const fallbackPrice = this.getFallbackPrice(tokenSymbol);
+            return tokenValue * fallbackPrice;
         }
     }
     
@@ -393,6 +539,72 @@ class PriceFetcher {
     updateProvider(newProvider) {
         this.provider = newProvider;
         logger.logInfo('PriceFetcher provider updated');
+    }
+    
+    /**
+     * Clear price cache
+     */
+    clearCache() {
+        this.priceCache.clear();
+        logger.logInfo('Price cache cleared');
+    }
+    
+    /**
+     * Get cache statistics
+     */
+    getCacheStats() {
+        const now = Date.now();
+        let validEntries = 0;
+        let expiredEntries = 0;
+        
+        for (const [key, value] of this.priceCache.entries()) {
+            if (now - value.timestamp < this.cacheExpiry) {
+                validEntries++;
+            } else {
+                expiredEntries++;
+            }
+        }
+        
+        return {
+            totalEntries: this.priceCache.size,
+            validEntries,
+            expiredEntries,
+            cacheHitRate: validEntries / Math.max(1, this.priceCache.size)
+        };
+    }
+    
+    /**
+     * Clean expired cache entries
+     */
+    cleanExpiredCache() {
+        const now = Date.now();
+        let cleaned = 0;
+        
+        for (const [key, value] of this.priceCache.entries()) {
+            if (now - value.timestamp >= this.cacheExpiry) {
+                this.priceCache.delete(key);
+                cleaned++;
+            }
+        }
+        
+        if (cleaned > 0) {
+            logger.logDebug(`Cleaned ${cleaned} expired cache entries`);
+        }
+        
+        return cleaned;
+    }
+    
+    /**
+     * Get performance metrics
+     */
+    getPerformanceMetrics() {
+        const cacheStats = this.getCacheStats();
+        
+        return {
+            cacheStats,
+            provider: this.provider ? 'Connected' : 'Disconnected',
+            lastUpdate: new Date().toISOString()
+        };
     }
 }
 

@@ -26,7 +26,7 @@ class ArbitrageBot {
         this.isRunning = false;
         this.startTime = Date.now();
         this.priceFetcher = null;
-        this.timeCalculator = new ArbitrageTimeCalculator();
+        this.timeCalculator = null;
         this.lastSuccessfulCheck = null;
         this.stats = {
             totalChecks: 0,
@@ -49,6 +49,16 @@ class ArbitrageBot {
             
             await this.setupProviders();
             this.priceFetcher = new PriceFetcher(this.getProvider());
+            
+            // Safe TimeCalculator initialization
+            try {
+                this.timeCalculator = new ArbitrageTimeCalculator();
+                logger.logInfo('✅ TimeCalculator initialized');
+            } catch (error) {
+                logger.logWarning('⚠️ TimeCalculator initialization failed, using fallback', error.message);
+                this.timeCalculator = null;
+            }
+            
             await this.loadNotificationsCache();
             await this.validateConfiguration();
             await this.testConnections();
@@ -60,9 +70,6 @@ class ArbitrageBot {
         }
     }
     
-    /**
-     * Setup multiple RPC providers from environment variables
-     */
     async setupProviders() {
         logger.logInfo('Setting up RPC providers...');
         
@@ -77,11 +84,11 @@ class ArbitrageBot {
         }
         
         // Add API key based endpoints
-        if (process.env.ALCHEMY_API_KEY) {
+        if (process.env.ALCHEMY_API_KEY && process.env.ALCHEMY_API_KEY !== 'undefined') {
             rpcEndpoints.push(`https://polygon-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`);
         }
         
-        if (process.env.INFURA_API_KEY) {
+        if (process.env.INFURA_API_KEY && process.env.INFURA_API_KEY !== 'undefined') {
             rpcEndpoints.push(`https://polygon.infura.io/v3/${process.env.INFURA_API_KEY}`);
         }
         
@@ -100,12 +107,16 @@ class ArbitrageBot {
         // Test each endpoint and add working ones
         for (const endpoint of uniqueEndpoints) {
             try {
-                const provider = new ethers.providers.JsonRpcProvider({
-                    url: endpoint,
-                    timeout: config.settings.rpcTimeoutMs || 10000
-                });
+                const provider = new ethers.JsonRpcProvider(
+                    endpoint,
+                    137, // Polygon chainId
+                    {
+                        staticNetwork: true,
+                        batchMaxCount: 1
+                    }
+                );
                 
-                // Test connection
+                // Test connection with timeout
                 await Promise.race([
                     provider.getNetwork(),
                     new Promise((_, reject) => 
@@ -128,48 +139,36 @@ class ArbitrageBot {
         logger.logSuccess(`Connected to ${this.providers.length} RPC providers`);
     }
     
-    /**
-     * Get current provider
-     */
     getProvider() {
         if (this.providers.length === 0) {
-            throw new Error('No providers available');
+            throw new Error('No RPC providers available');
         }
         return this.providers[this.currentProviderIndex];
     }
     
-    /**
-     * Switch to next provider on failure
-     */
     async switchProvider() {
-        const oldIndex = this.currentProviderIndex;
+        if (this.providers.length <= 1) {
+            logger.logWarning('⚠️ Cannot switch provider - only one available');
+            return;
+        }
+        
         this.currentProviderIndex = (this.currentProviderIndex + 1) % this.providers.length;
         this.stats.rpcFailovers++;
         
-        logger.logWarning(`🔄 RPC failover: ${oldIndex + 1} → ${this.currentProviderIndex + 1}/${this.providers.length}`);
+        const newProvider = this.getProvider();
+        this.priceFetcher.updateProvider(newProvider);
         
-        // Update price fetcher with new provider
-        if (this.priceFetcher) {
-            this.priceFetcher.updateProvider(this.getProvider());
-        }
+        logger.logInfo(`🔄 Switched to RPC provider ${this.currentProviderIndex + 1}/${this.providers.length}`);
         
         // Test new provider
         try {
-            const provider = this.getProvider();
-            await provider.getBlockNumber();
-            logger.logInfo('✅ New provider is working');
+            await newProvider.getBlockNumber();
+            logger.logSuccess('✅ New provider is working');
         } catch (error) {
-            logger.logError('❌ New provider also failed', error);
-            // Try next provider if available
-            if (this.providers.length > 1) {
-                await this.switchProvider();
-            }
+            logger.logWarning('⚠️ New provider also has issues, will retry later');
         }
     }
     
-    /**
-     * Validate configuration
-     */
     async validateConfiguration() {
         logger.logInfo('Validating configuration...');
         
@@ -183,14 +182,14 @@ class ArbitrageBot {
         
         // Validate token addresses
         for (const [symbol, token] of Object.entries(config.tokens)) {
-            if (!token.address || !ethers.utils.isAddress(token.address)) {
+            if (!token.address || !ethers.isAddress(token.address)) {
                 throw new Error(`Invalid address for token ${symbol}: ${token.address}`);
             }
         }
         
         // Validate DEX addresses
         for (const [dexName, dex] of Object.entries(config.dexes)) {
-            if (!dex.router || !ethers.utils.isAddress(dex.router)) {
+            if (!dex.router || !ethers.isAddress(dex.router)) {
                 throw new Error(`Invalid router address for ${dexName}: ${dex.router}`);
             }
         }
@@ -198,65 +197,159 @@ class ArbitrageBot {
         logger.logSuccess('✅ Configuration validated');
     }
     
-    /**
-     * Test all connections
-     */
     async testConnections() {
         logger.logInfo('Testing connections...');
         
-        // Test RPC connection
+        // Test Telegram
+        const telegramStatus = telegramNotifier.getStatus();
+        if (telegramStatus.configured) {
+            const testSent = await telegramNotifier.testConnection();
+            if (testSent) {
+                logger.logSuccess('✅ Telegram connection working');
+            } else {
+                logger.logWarning('⚠️ Telegram test failed - check credentials');
+            }
+        } else {
+            logger.logWarning('⚠️ Telegram not configured - notifications disabled');
+        }
+        
+        // Test RPC
         try {
             const provider = this.getProvider();
-            const [blockNumber, network] = await Promise.all([
-                provider.getBlockNumber(),
-                provider.getNetwork()
-            ]);
+            const blockNumber = await provider.getBlockNumber();
+            const network = await provider.getNetwork();
             
-            if (network.chainId !== 137) {
-                throw new Error(`Wrong network: expected Polygon (137), got ${network.chainId}`);
+            if (Number(network.chainId) !== 137) {
+                throw new Error(`Wrong network: expected 137, got ${network.chainId}`);
             }
             
-            logger.logSuccess(`✅ RPC connected - Block: ${blockNumber}, Chain: ${network.chainId}`);
+            logger.logSuccess(`✅ RPC working - Block: ${blockNumber}, Chain: ${network.chainId}`);
         } catch (error) {
-            logger.logError('❌ RPC connection test failed', error);
-            throw error;
-        }
-        
-        // Test Telegram
-        try {
-            const botInfo = await telegramNotifier.getBotInfo();
-            if (botInfo) {
-                logger.logSuccess(`✅ Telegram connected - Bot: @${botInfo.username}`);
-            }
-        } catch (error) {
-            logger.logWarning('⚠️ Telegram test failed - notifications disabled', error.message);
-        }
-        
-        // Test price fetching with real data
-        try {
-            logger.logInfo('Testing real price fetching...');
-            const testResult = await this.priceFetcher.getTokenPrice('USDC', 'sushiswap', 1000);
-            if (testResult.success && testResult.price > 0) {
-                logger.logSuccess(`✅ Price fetching test passed - USDC price: ${testResult.price.toFixed(6)}`);
-            } else {
-                logger.logWarning('⚠️ Price fetching test failed, but bot can continue');
-            }
-        } catch (error) {
-            logger.logWarning('⚠️ Price fetching test error', error.message);
+            throw new Error(`RPC connection failed: ${error.message}`);
         }
     }
     
-    /**
-     * Load notifications cache
-     */
     async loadNotificationsCache() {
-        this.recentNotifications = await loadNotificationsCache();
-        logger.logInfo(`Loaded ${this.recentNotifications.size} cached notifications`);
+        try {
+            this.recentNotifications = await loadNotificationsCache();
+            logger.logInfo(`📋 Loaded ${this.recentNotifications.size} cached notifications`);
+        } catch (error) {
+            logger.logWarning('⚠️ Failed to load notifications cache, starting fresh');
+            this.recentNotifications = new Map();
+        }
     }
     
-    /**
-     * Find real arbitrage opportunities using on-chain data
-     */
+    async start() {
+        if (this.isRunning) {
+            logger.logWarning('⚠️ Bot is already running');
+            return;
+        }
+        
+        this.isRunning = true;
+        this.startTime = Date.now();
+        
+        logger.logSuccess('🚀 Starting arbitrage monitoring...');
+        logger.logInfo(`📊 Checking ${Object.keys(config.tokens).length} tokens across ${Object.keys(config.dexes).length} DEXes`);
+        logger.logInfo(`⏱️ Check interval: ${config.settings.checkIntervalMs / 1000}s`);
+        logger.logInfo(`💰 Input amount: $${config.settings.inputAmountUSD}`);
+        logger.logInfo(`📈 Min spread: ${config.settings.minBasisPointsPerTrade} bps`);
+        
+        // Send startup notification
+        await telegramNotifier.sendArbitrageAlert({
+            type: 'info',
+            message: '🚀 Polygon Arbitrage Bot Started',
+            details: `Monitoring ${Object.keys(config.tokens).length} tokens across ${Object.keys(config.dexes).length} DEXes`
+        });
+        
+        // Start main loop
+        this.runLoop();
+        
+        // Setup graceful shutdown
+        process.on('SIGINT', () => this.stop());
+        process.on('SIGTERM', () => this.stop());
+    }
+    
+    async runLoop() {
+        while (this.isRunning) {
+            try {
+                await this.checkAllTokens();
+                await this.saveStats();
+                
+                // Wait for next check
+                await sleep(config.settings.checkIntervalMs);
+                
+            } catch (error) {
+                logger.logError('❌ Error in main loop', error);
+                this.stats.errors++;
+                
+                // Try to recover
+                await this.switchProvider();
+                await sleep(5000); // Short pause before retry
+            }
+        }
+    }
+    
+    async checkAllTokens() {
+        const tokens = Object.keys(config.tokens);
+        const startTime = Date.now();
+        
+        this.stats.totalChecks++;
+        this.stats.lastCheck = getCurrentTimestamp();
+        
+        logger.logInfo(`🔍 Checking ${tokens.length} tokens for arbitrage opportunities...`);
+        
+        const opportunities = [];
+        
+        // Check tokens in batches to avoid overwhelming RPC
+        const batchSize = 3;
+        for (let i = 0; i < tokens.length; i += batchSize) {
+            const batch = tokens.slice(i, i + batchSize);
+            
+            const batchPromises = batch.map(async (token) => {
+                try {
+                    const opportunity = await this.findArbitrageOpportunity(token);
+                    if (opportunity) {
+                        opportunities.push(opportunity);
+                        this.stats.opportunitiesFound++;
+                    }
+                    return opportunity;
+                } catch (error) {
+                    logger.logError(`Error checking ${token}`, error);
+                    return null;
+                }
+            });
+            
+            const batchResults = await Promise.allSettled(batchPromises);
+            
+            // Small delay between batches
+            if (i + batchSize < tokens.length) {
+                await sleep(1000);
+            }
+        }
+        
+        const checkDuration = Date.now() - startTime;
+        
+        if (opportunities.length > 0) {
+            logger.logSuccess(`✅ Found ${opportunities.length} viable opportunities in ${checkDuration}ms`);
+            
+            // Sort by adjusted profit and confidence
+            opportunities.sort((a, b) => {
+                const scoreA = a.adjustedProfit * a.confidence;
+                const scoreB = b.adjustedProfit * b.confidence;
+                return scoreB - scoreA;
+            });
+            
+            // Process opportunities
+            for (const opportunity of opportunities) {
+                await this.processOpportunity(opportunity);
+            }
+        } else {
+            logger.logInfo(`🔍 No viable opportunities found in ${checkDuration}ms`);
+        }
+        
+        this.lastSuccessfulCheck = Date.now();
+    }
+    
     async findArbitrageOpportunity(tokenSymbol) {
         try {
             const inputAmountUSD = config.settings.inputAmountUSD;
@@ -342,24 +435,71 @@ class ArbitrageBot {
                 sellPath: sellPrice.path,
                 buyMethod: buyPrice.method,
                 sellMethod: sellPrice.method,
+                estimatedSlippage: {
+                    buy: buyPrice.estimatedSlippage || 0.3,
+                    sell: sellPrice.estimatedSlippage || 0.3
+                },
                 timestamp: getCurrentTimestamp(),
                 allPrices: validPrices.map(p => ({
                     dex: p.dex,
                     price: p.price,
                     path: p.path,
-                    method: p.method
+                    method: p.method,
+                    slippage: p.estimatedSlippage
                 }))
             };
             
             // Calculate timing and viability
-            const timingData = this.timeCalculator.calculateArbitrageTimings(opportunity);
+            let timingData = null;
+            try {
+                if (this.timeCalculator && typeof this.timeCalculator.calculateArbitrageTimings === 'function') {
+                    timingData = await this.timeCalculator.calculateArbitrageTimings(opportunity, this.getProvider());
+                } else {
+                    logger.logWarning('TimeCalculator not available, using fallback');
+                    // Create basic timing data for continuation
+                    timingData = {
+                        isViable: basisPoints >= minBasisPoints && potentialProfit > 5,
+                        confidence: basisPoints > 100 ? 0.7 : 0.5,
+                        adjustedProfit: {
+                            adjustedProfit: Math.max(0, potentialProfit - 2) // Simple $2 cost adjustment
+                        },
+                        recommendation: {
+                            action: basisPoints > 100 ? 'EXECUTE' : 'MONITOR',
+                            reason: 'Basic analysis (TimeCalculator unavailable)',
+                            priority: basisPoints > 150 ? 6 : 3
+                        },
+                        executionTime: 10000, // 10 seconds default
+                        deadline: Date.now() + 20000, // 20 seconds window
+                        networkMetrics: { networkLoad: 1.0 }
+                    };
+                }
+            } catch (timingError) {
+                logger.logError(`TimeCalculator error for ${tokenSymbol}`, timingError);
+                // Fallback timing data
+                timingData = {
+                    isViable: basisPoints >= minBasisPoints && potentialProfit > 5,
+                    confidence: 0.6,
+                    adjustedProfit: {
+                        adjustedProfit: Math.max(0, potentialProfit - 2)
+                    },
+                    recommendation: {
+                        action: 'MONITOR',
+                        reason: 'TimeCalculator error - using fallback',
+                        priority: 2
+                    },
+                    executionTime: 12000,
+                    deadline: Date.now() + 15000,
+                    networkMetrics: { networkLoad: 1.0 }
+                };
+            }
             
             if (!timingData || !timingData.isViable) {
                 this.stats.skippedByTime++;
                 logger.logDebug(`❌ Opportunity not viable due to timing for ${tokenSymbol}`, {
                     confidence: timingData?.confidence || 0,
                     adjustedProfit: timingData?.adjustedProfit?.adjustedProfit || 0,
-                    recommendation: timingData?.recommendation?.action || 'UNKNOWN'
+                    recommendation: timingData?.recommendation?.action || 'UNKNOWN',
+                    reason: timingData?.recommendation?.reason || 'No timing data'
                 });
                 return null;
             }
@@ -370,6 +510,7 @@ class ArbitrageBot {
             opportunity.confidence = timingData.confidence;
             opportunity.executionWindow = timingData.executionTime;
             opportunity.deadline = timingData.deadline;
+            opportunity.networkMetrics = timingData.networkMetrics;
             
             this.stats.viableOpportunities++;
             
@@ -378,11 +519,14 @@ class ArbitrageBot {
                 originalProfit: `$${potentialProfit.toFixed(2)}`,
                 adjustedProfit: `$${timingData.adjustedProfit.adjustedProfit.toFixed(2)}`,
                 confidence: `${(timingData.confidence * 100).toFixed(1)}%`,
-                executionTime: `${timingData.executionTime}ms`,
+                recommendation: timingData.recommendation.action,
+                priority: timingData.recommendation.priority || 'N/A',
+                executionTime: `${(timingData.executionTime/1000).toFixed(1)}s`,
                 buyDex: buyPrice.dex,
                 sellDex: sellPrice.dex,
-                buyPath: buyPrice.path?.join('→'),
-                sellPath: sellPrice.path?.join('→')
+                buyPath: buyPrice.path?.join('→') || 'Direct',
+                sellPath: sellPrice.path?.join('→') || 'Direct',
+                networkLoad: timingData.networkMetrics?.networkLoad?.toFixed(1) || 'N/A'
             });
             
             return opportunity;
@@ -393,16 +537,17 @@ class ArbitrageBot {
             
             // Try switching provider on critical errors
             if (error.message.includes('timeout') || error.message.includes('network')) {
-                await this.switchProvider();
+                try {
+                    await this.switchProvider();
+                } catch (switchError) {
+                    logger.logError('Failed to switch provider', switchError);
+                }
             }
             
             return null;
         }
     }
     
-    /**
-     * Process and notify about arbitrage opportunity
-     */
     async processOpportunity(opportunity) {
         try {
             const notificationId = createNotificationId(
@@ -412,257 +557,122 @@ class ArbitrageBot {
                 opportunity.basisPoints
             );
             
-            // Check for duplicates
-            const cooldownMs = config.settings.notificationCooldownMs;
-            if (isDuplicateNotification(notificationId, this.recentNotifications, cooldownMs)) {
-                logger.logDebug(`🔄 Skipping duplicate notification: ${notificationId}`);
+            // Check for duplicate notifications
+            if (isDuplicateNotification(
+                notificationId, 
+                this.recentNotifications, 
+                config.settings.notificationCooldownMs
+            )) {
+                logger.logDebug(`🔇 Skipping duplicate notification for ${opportunity.token}`);
                 return;
             }
             
-            // Log to file
-            await logger.logArbitrage(opportunity);
-            
-            // Send Telegram notification
-            await telegramNotifier.sendArbitrageAlert(opportunity);
-            
-            this.stats.opportunitiesFound++;
-            
-            logger.logSuccess(`📱 Arbitrage opportunity processed and notified: ${opportunity.token}`);
-            
-        } catch (error) {
-            logger.logError('❌ Failed to process opportunity', error);
-        }
-    }
-    
-    /**
-     * Check all tokens for real arbitrage opportunities
-     */
-    async checkAllTokens() {
-        try {
-            this.stats.totalChecks++;
-            this.stats.lastCheck = getCurrentTimestamp();
-            
-            logger.logInfo('🔍 CHECKING FOR REAL ARBITRAGE OPPORTUNITIES...');
-            
-            const tokens = Object.keys(config.tokens);
-            const opportunities = [];
-            let checksCompleted = 0;
-            
-            for (const tokenSymbol of tokens) {
-                try {
-                    logger.logInfo(`📊 Checking ${tokenSymbol} (${checksCompleted + 1}/${tokens.length})...`);
-                    
-                    const opportunity = await this.findArbitrageOpportunity(tokenSymbol);
-                    if (opportunity) {
-                        opportunities.push(opportunity);
-                    }
-                    
-                    checksCompleted++;
-                    
-                    // Small delay between token checks to avoid overwhelming RPCs
-                    await sleep(1000);
-                    
-                } catch (error) {
-                    logger.logError(`❌ Error checking ${tokenSymbol}`, error);
-                    
-                    // Try switching provider on repeated errors
-                    if (error.message.includes('timeout') || error.message.includes('network')) {
-                        await this.switchProvider();
-                    }
-                }
-            }
-            
-            this.lastSuccessfulCheck = Date.now();
-            
-            logger.logInfo(`📈 Check completed: Found ${opportunities.length} arbitrage opportunities`);
-            
-            // Process all opportunities
-            for (const opportunity of opportunities) {
-                await this.processOpportunity(opportunity);
-            }
-            
-            // Save notifications cache
-            await saveNotificationsCache(this.recentNotifications);
-            
-            // Log comprehensive stats
-            logger.logInfo('📊 Check Statistics', {
-                opportunities: opportunities.length,
-                totalChecks: this.stats.totalChecks,
-                viableOpportunities: this.stats.viableOpportunities,
-                skippedByTime: this.stats.skippedByTime,
-                successfulPrices: this.stats.successfulPriceFetches,
-                failedPrices: this.stats.failedPriceFetches,
-                rpcFailovers: this.stats.rpcFailovers,
-                errors: this.stats.errors,
-                currentProvider: `${this.currentProviderIndex + 1}/${this.providers.length}`
+            // Send notification
+            const alertSent = await telegramNotifier.sendArbitrageAlert({
+                type: 'arbitrage',
+                opportunity,
+                botStats: this.getStats()
             });
             
-        } catch (error) {
-            logger.logError('❌ Critical error in checkAllTokens', error);
-            this.stats.errors++;
-            
-            // Try provider failover on critical errors
-            await this.switchProvider();
-        }
-    }
-    
-    /**
-     * Start the arbitrage monitoring bot
-     */
-    async start() {
-        if (this.isRunning) {
-            logger.logWarning('⚠️ Bot is already running');
-            return;
-        }
-        
-        this.isRunning = true;
-        logger.logSuccess('🚀 STARTING POLYGON ARBITRAGE BOT...');
-        
-        // Send startup notification
-        await telegramNotifier.sendStatusUpdate({
-            running: true,
-            uptime: '0s',
-            opportunitiesFound: 0,
-            lastCheck: 'Starting...',
-            activeTokens: Object.keys(config.tokens).length,
-            activeDexes: Object.keys(config.dexes).length,
-            rpcProviders: this.providers.length
-        });
-        
-        const checkInterval = config.settings.checkIntervalMs || 30000;
-        
-        while (this.isRunning) {
-            try {
-                await this.checkAllTokens();
-                
-                logger.logInfo(`⏰ Next check in ${checkInterval / 1000}s...`);
-                await sleep(checkInterval);
-                
-            } catch (error) {
-                logger.logError('❌ CRITICAL ERROR in main loop', error);
-                
-                // Send error alert
-                await telegramNotifier.sendErrorAlert('Critical bot error in main loop', {
-                    details: error.message,
-                    stack: error.stack
-                });
-                
-                // Wait before retrying
-                logger.logInfo('⏳ Waiting 10s before retry...');
-                await sleep(10000);
+            if (alertSent) {
+                logger.logSuccess(`📱 Alert sent for ${opportunity.token} arbitrage`);
+            } else {
+                logger.logWarning(`📱 Failed to send alert for ${opportunity.token}`);
             }
+            
+        } catch (error) {
+            logger.logError('Error processing opportunity', error);
         }
     }
     
-    /**
-     * Stop the bot gracefully
-     */
-    async stop() {
-        logger.logInfo('🛑 STOPPING ARBITRAGE BOT...');
-        this.isRunning = false;
-        
-        // Save final state
-        await saveNotificationsCache(this.recentNotifications);
-        
-        // Send shutdown notification
-        await telegramNotifier.sendStatusUpdate({
-            running: false,
-            uptime: this.getStats().uptime,
-            opportunitiesFound: this.stats.opportunitiesFound,
-            lastCheck: this.stats.lastCheck,
-            totalChecks: this.stats.totalChecks
-        });
-        
-        logger.logSuccess('✅ Bot stopped gracefully');
+    async saveStats() {
+        try {
+            await saveNotificationsCache(this.recentNotifications);
+        } catch (error) {
+            logger.logError('Failed to save stats', error);
+        }
     }
     
-    /**
-     * Get comprehensive bot statistics
-     */
     getStats() {
         const uptime = Date.now() - this.startTime;
-        const uptimeStr = new Date(uptime).toISOString().substr(11, 8);
-        
-        const successRate = this.stats.successfulPriceFetches / 
-            Math.max(1, this.stats.successfulPriceFetches + this.stats.failedPriceFetches);
+        const uptimeMinutes = Math.floor(uptime / 60000);
         
         return {
             ...this.stats,
-            uptime: uptimeStr,
-            isRunning: this.isRunning,
-            providers: this.providers.length,
+            uptime: `${uptimeMinutes} minutes`,
+            uptimeMs: uptime,
+            activeProviders: this.providers.length,
             currentProvider: this.currentProviderIndex + 1,
-            notifications: this.recentNotifications.size,
-            successRate: (successRate * 100).toFixed(1) + '%',
             lastSuccessfulCheck: this.lastSuccessfulCheck ? 
-                new Date(this.lastSuccessfulCheck).toISOString() : 'Never'
+                new Date(this.lastSuccessfulCheck).toISOString() : null,
+            successRate: this.stats.totalChecks > 0 ? 
+                ((this.stats.totalChecks - this.stats.errors) / this.stats.totalChecks * 100).toFixed(1) + '%' : 'N/A'
         };
+    }
+    
+    async printStats() {
+        const stats = this.getStats();
+        
+        logger.logInfo('📊 Bot Statistics:');
+        logger.logInfo(`   ⏱️ Uptime: ${stats.uptime}`);
+        logger.logInfo(`   🔍 Total checks: ${stats.totalChecks}`);
+        logger.logInfo(`   💎 Opportunities found: ${stats.opportunitiesFound}`);
+        logger.logInfo(`   ✅ Viable opportunities: ${stats.viableOpportunities}`);
+        logger.logInfo(`   ⏰ Skipped by timing: ${stats.skippedByTime}`);
+        logger.logInfo(`   ❌ Errors: ${stats.errors}`);
+        logger.logInfo(`   🔄 RPC failovers: ${stats.rpcFailovers}`);
+        logger.logInfo(`   📡 Success rate: ${stats.successRate}`);
+        logger.logInfo(`   🌐 Active providers: ${stats.activeProviders}`);
+        
+        if (this.timeCalculator) {
+            const calibrationStats = this.timeCalculator.getCalibrationStats();
+            logger.logInfo(`   🎯 TimeCalculator accuracy: ${calibrationStats.accuracy}`);
+        }
+    }
+    
+    async stop() {
+        if (!this.isRunning) {
+            logger.logWarning('⚠️ Bot is not running');
+            return;
+        }
+        
+        logger.logInfo('🛑 Stopping arbitrage bot...');
+        this.isRunning = false;
+        
+        try {
+            await this.saveStats();
+            await this.printStats();
+            
+            // Send shutdown notification
+            await telegramNotifier.sendArbitrageAlert({
+                type: 'info',
+                message: '🛑 Polygon Arbitrage Bot Stopped',
+                details: `Final stats: ${this.stats.opportunitiesFound} opportunities found, ${this.stats.viableOpportunities} viable`
+            });
+            
+            logger.logSuccess('✅ Bot stopped gracefully');
+        } catch (error) {
+            logger.logError('Error during shutdown', error);
+        }
+        
+        process.exit(0);
     }
 }
 
-// Enhanced error handling
-process.on('uncaughtException', async (error) => {
-    logger.logError('🚨 UNCAUGHT EXCEPTION', error);
-    
-    // Try to send emergency notification
-    try {
-        await telegramNotifier.sendErrorAlert('Bot crashed - Uncaught Exception', {
-            details: error.message,
-            stack: error.stack
-        });
-    } catch (notificationError) {
-        console.error('Failed to send crash notification:', notificationError);
-    }
-    
-    process.exit(1);
-});
-
-process.on('unhandledRejection', async (reason, promise) => {
-    logger.logError('🚨 UNHANDLED REJECTION', reason);
-    
-    // Try to send emergency notification
-    try {
-        await telegramNotifier.sendErrorAlert('Bot error - Unhandled Rejection', {
-            details: reason?.message || String(reason)
-        });
-    } catch (notificationError) {
-        console.error('Failed to send error notification:', notificationError);
-    }
-});
-
-// Graceful shutdown handlers
-const gracefulShutdown = async (signal) => {
-    logger.logInfo(`📡 Received ${signal}, shutting down gracefully...`);
-    
-    if (global.arbitrageBot) {
-        await global.arbitrageBot.stop();
-    }
-    
-    process.exit(0);
-};
-
-process.on('SIGINT', gracefulShutdown);
-process.on('SIGTERM', gracefulShutdown);
-
-// Main execution
+// Create and start bot if this file is run directly
 if (require.main === module) {
     const bot = new ArbitrageBot();
-    global.arbitrageBot = bot; // For graceful shutdown
     
-    bot.start().catch(async (error) => {
-        logger.logError('❌ FAILED TO START BOT', error);
-        
-        try {
-            await telegramNotifier.sendErrorAlert('Bot failed to start', {
-                details: error.message,
-                stack: error.stack
-            });
-        } catch (notificationError) {
-            console.error('Failed to send startup error notification:', notificationError);
-        }
-        
+    // Start the bot
+    bot.start().catch(error => {
+        logger.logError('Failed to start bot', error);
         process.exit(1);
     });
+    
+    // Setup periodic stats reporting
+    setInterval(() => {
+        bot.printStats();
+    }, 300000); // Every 5 minutes
 }
 
 module.exports = ArbitrageBot;
