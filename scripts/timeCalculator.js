@@ -2,73 +2,73 @@ const logger = require('./logger');
 
 class ArbitrageTimeCalculator {
     constructor() {
-        // Polygon network timing constants (динамически обновляемые)
+        // Реалистичные параметры сети Polygon
         this.networkTiming = {
-            avgBlockTime: 2100,        // ~2.1 секунды на блок (будет обновляться)
-            confirmationBlocks: 2,     // блоков для подтверждения
-            gasEstimationTime: 500,    // время на расчет газа
-            mempoolDelay: 300,         // средняя задержка в mempool (адаптивная)
-            rpcLatency: 200,           // задержка RPC вызовов
-            dexProcessingTime: 1000    // время обработки на DEX
+            avgBlockTime: 2200,        // ~2.2 секунды на блок
+            confirmationBlocks: 1,     // 1 блок для подтверждения на Polygon
+            gasEstimationTime: 300,    // время на расчет газа
+            mempoolDelay: 500,         // задержка в mempool
+            rpcLatency: 150,           // задержка RPC вызовов
+            dexProcessingTime: 800     // время обработки на DEX
         };
         
-        // Арбитражные параметры (калиброванные)
+        // Реалистичные параметры арбитража
         this.arbitrageParams = {
-            minExecutionWindow: 8000,   // мин. окно в мс (снижено)
-            maxExecutionWindow: 45000,  // макс. окно в мс (снижено)
-            priceDecayRate: 0.08,      // падение спреда % за секунду (увеличено)
-            slippageFactor: 0.002,     // дополнительный slippage (снижено)
-            confidenceThreshold: 0.55  // мин. вероятность успеха (снижено)
+            minExecutionWindow: 5000,   // минимальное окно 5 секунд
+            maxExecutionWindow: 30000,  // максимальное окно 30 секунд
+            priceDecayRate: 0.12,      // скорость распада спреда
+            slippageFactor: 0.002,     // базовый slippage 0.2%
+            confidenceThreshold: 0.4   // минимальная вероятность успеха 40%
         };
         
-        // Cache для динамических параметров
-        this.dynamicCache = {
-            avgBlockTime: { value: 2100, timestamp: 0, samples: [] },
-            gasPriceCache: { price: 30, timestamp: 0, expiry: 30000 },
-            networkLoad: { value: 'normal', timestamp: 0 }
+        // Кэш данных о сети
+        this.networkCache = {
+            gasPrice: { value: 25, timestamp: 0 }, // 25 Gwei по умолчанию
+            blockTime: { value: 2200, timestamp: 0 },
+            maticPrice: { value: 0.9, timestamp: 0 } // $0.9 за MATIC
         };
         
-        // Статистика для калибровки
-        this.calibrationStats = {
-            totalOpportunities: 0,
-            successfulPredictions: 0,
-            timeErrors: [],
-            priceDecayErrors: []
+        // Статистика
+        this.stats = {
+            totalCalculations: 0,
+            viableOpportunities: 0,
+            avgConfidence: 0
         };
     }
     
     /**
-     * Рассчитать временные параметры арбитража с улучшенными алгоритмами
+     * Основной метод расчета арбитражных возможностей
      */
     async calculateArbitrageTimings(opportunity, provider = null) {
         try {
-            const discoveryTime = Date.now();
+            this.stats.totalCalculations++;
+            const startTime = Date.now();
             
-            // Обновить динамические параметры сети
+            // Обновляем данные о сети
             if (provider) {
-                await this.updateNetworkMetrics(provider);
+                await this.updateNetworkData(provider);
             }
             
-            // 1. Время выполнения транзакций (адаптивное)
-            const executionTime = this.calculateAdaptiveExecutionTime();
+            // 1. Расчет времени выполнения
+            const executionTime = this.calculateExecutionTime(opportunity);
             
-            // 2. Окно жизнеспособности (улучшенное)
-            const viabilityWindow = this.calculateImprovedViabilityWindow(opportunity);
+            // 2. Окно жизнеспособности
+            const viabilityWindow = this.calculateViabilityWindow(opportunity);
             
-            // 3. Временной распад цены (калиброванный)
-            const priceDecay = this.calculateCalibratedPriceDecay(opportunity, executionTime);
+            // 3. Распад цены во времени
+            const priceDecay = this.calculatePriceDecay(opportunity, executionTime);
             
-            // 4. Скорректированная прибыль (с реальными ценами на газ)
-            const adjustedProfit = await this.calculatePreciseAdjustedProfit(opportunity, priceDecay, provider);
+            // 4. Скорректированная прибыль с реальными затратами
+            const adjustedProfit = await this.calculateRealisticProfit(opportunity, provider);
             
-            // 5. Вероятность успеха (улучшенная)
-            const confidence = this.calculateImprovedConfidence(opportunity, executionTime, viabilityWindow);
+            // 5. Вероятность успеха
+            const confidence = this.calculateConfidence(opportunity, executionTime, viabilityWindow);
             
             // 6. Дедлайн для действий
-            const deadline = discoveryTime + viabilityWindow;
+            const deadline = startTime + viabilityWindow;
             
             const timingData = {
-                discoveryTime,
+                discoveryTime: startTime,
                 executionTime,
                 viabilityWindow,
                 priceDecay,
@@ -76,80 +76,37 @@ class ArbitrageTimeCalculator {
                 confidence,
                 deadline,
                 timeRemaining: Math.max(0, deadline - Date.now()),
-                isViable: confidence >= this.arbitrageParams.confidenceThreshold && 
-                         adjustedProfit.adjustedProfit > 3, // Снижено до $3
-                recommendation: this.getImprovedRecommendation(confidence, adjustedProfit, executionTime),
+                isViable: this.isOpportunityViable(confidence, adjustedProfit, opportunity),
+                recommendation: this.getRecommendation(confidence, adjustedProfit, executionTime),
                 networkMetrics: this.getNetworkMetrics()
             };
             
-            // Обновить статистику для дальнейшей калибровки
-            this.updateCalibrationStats(timingData);
+            // Обновляем статистику
+            if (timingData.isViable) {
+                this.stats.viableOpportunities++;
+            }
             
-            logger.logDebug('Enhanced arbitrage timing calculated', {
-                confidence: confidence.toFixed(3),
-                adjustedProfit: adjustedProfit.adjustedProfit.toFixed(2),
-                executionTime: executionTime.toFixed(0),
-                avgBlockTime: this.dynamicCache.avgBlockTime.value.toFixed(0)
+            this.updateAverageConfidence(confidence);
+            
+            logger.logDebug('Arbitrage timing calculated', {
+                token: opportunity.token,
+                confidence: (confidence * 100).toFixed(1) + '%',
+                netProfit: adjustedProfit.adjustedProfit.toFixed(2),
+                executionTime: (executionTime / 1000).toFixed(1) + 's'
             });
             
             return timingData;
             
         } catch (error) {
             logger.logError('Failed to calculate arbitrage timings', error);
-            return null;
+            return this.getFallbackTiming(opportunity);
         }
     }
     
     /**
-     * Обновить метрики сети в реальном времени
+     * Реалистичный расчет времени выполнения
      */
-    async updateNetworkMetrics(provider) {
-        try {
-            const now = Date.now();
-            
-            // Обновляем время блока каждые 5 минут
-            if (now - this.dynamicCache.avgBlockTime.timestamp > 300000) {
-                const currentBlock = await provider.getBlockNumber();
-                const block1 = await provider.getBlock(currentBlock);
-                const block2 = await provider.getBlock(currentBlock - 10);
-                
-                if (block1 && block2) {
-                    const timeDiff = block1.timestamp - block2.timestamp;
-                    const newAvgBlockTime = (timeDiff / 10) * 1000; // в миллисекундах
-                    
-                    // Добавляем в выборку для сглаживания
-                    this.dynamicCache.avgBlockTime.samples.push(newAvgBlockTime);
-                    if (this.dynamicCache.avgBlockTime.samples.length > 20) {
-                        this.dynamicCache.avgBlockTime.samples.shift();
-                    }
-                    
-                    // Вычисляем сглаженное среднее
-                    const avgSamples = this.dynamicCache.avgBlockTime.samples.reduce((a, b) => a + b, 0) / 
-                                      this.dynamicCache.avgBlockTime.samples.length;
-                    
-                    this.dynamicCache.avgBlockTime.value = avgSamples;
-                    this.dynamicCache.avgBlockTime.timestamp = now;
-                    
-                    // Обновляем параметры сети
-                    this.networkTiming.avgBlockTime = avgSamples;
-                    
-                    logger.logDebug('Network metrics updated', {
-                        newAvgBlockTime: newAvgBlockTime.toFixed(0),
-                        smoothedAvg: avgSamples.toFixed(0),
-                        samples: this.dynamicCache.avgBlockTime.samples.length
-                    });
-                }
-            }
-            
-        } catch (error) {
-            logger.logDebug('Failed to update network metrics', error.message);
-        }
-    }
-    
-    /**
-     * Адаптивный расчет времени выполнения
-     */
-    calculateAdaptiveExecutionTime() {
+    calculateExecutionTime(opportunity) {
         const {
             avgBlockTime,
             confirmationBlocks,
@@ -159,646 +116,463 @@ class ArbitrageTimeCalculator {
             dexProcessingTime
         } = this.networkTiming;
         
-        // Время на транзакции с учетом реального времени блоков
-        const transactionTime = (avgBlockTime * confirmationBlocks) * 2;
+        // Базовое время транзакции
+        const transactionTime = avgBlockTime * confirmationBlocks;
         
-        // Адаптивная задержка mempool в зависимости от загрузки сети
-        const networkLoad = this.getNetworkLoadMultiplier();
-        const adaptiveMempoolDelay = mempoolDelay * networkLoad;
+        // Дополнительное время для сложных путей
+        const pathComplexity = this.getPathComplexity(opportunity);
+        const complexityMultiplier = 1 + (pathComplexity * 0.2);
         
-        // Общее время с буфером безопасности
-        const baseTime = 
-            gasEstimationTime * 2 +
-            adaptiveMempoolDelay * 2 +
-            transactionTime +
-            rpcLatency * 4 +
-            dexProcessingTime * 2;
+        // Время сети в зависимости от загрузки
+        const networkLoadMultiplier = this.getNetworkLoadMultiplier();
         
-        // Добавляем 20% буфер для непредвиденных задержек
-        const totalTime = baseTime * 1.2;
+        const totalTime = (
+            gasEstimationTime * 2 +     // Два свапа
+            mempoolDelay * networkLoadMultiplier * 2 +
+            transactionTime * 2 +       // Два блока
+            rpcLatency * 4 +           // Множественные RPC вызовы
+            dexProcessingTime * 2      // Обработка на двух DEX
+        ) * complexityMultiplier;
         
-        return totalTime;
+        return Math.max(3000, Math.min(25000, totalTime)); // От 3 до 25 секунд
     }
     
     /**
-     * Получить множитель загрузки сети
+     * Расчет окна жизнеспособности
      */
-    getNetworkLoadMultiplier() {
-        const currentHour = new Date().getUTCHours();
+    calculateViabilityWindow(opportunity) {
+        const { basisPoints, token, buyLiquidity, sellLiquidity } = opportunity;
         
-        // Простая эвристика на основе времени суток (UTC)
-        if (currentHour >= 12 && currentHour <= 20) {
-            return 1.3; // Пиковые часы - больше задержек
-        } else if (currentHour >= 21 || currentHour <= 6) {
-            return 0.8; // Ночные часы - меньше задержек
-        }
-        return 1.0; // Обычное время
-    }
-    
-    /**
-     * Улучшенный расчет окна жизнеспособности
-     */
-    calculateImprovedViabilityWindow(opportunity) {
-        const { basisPoints, token } = opportunity;
+        // Базовое окно в зависимости от спреда
+        let baseWindow = 15000; // 15 секунд по умолчанию
         
-        // Базовое окно в зависимости от спреда (более консервативно)
-        let baseWindow;
-        if (basisPoints > 300) {
-            baseWindow = 25000; // 25 секунд для очень больших спредов
-        } else if (basisPoints > 200) {
-            baseWindow = 18000; // 18 секунд для больших спредов
-        } else if (basisPoints > 100) {
-            baseWindow = 12000; // 12 секунд для средних
-        } else if (basisPoints > 50) {
-            baseWindow = 8000;  // 8 секунд для малых
-        } else {
-            baseWindow = 5000;  // 5 секунд для очень малых
-        }
+        if (basisPoints > 200) baseWindow = 25000;      // 25с для больших спредов
+        else if (basisPoints > 100) baseWindow = 20000; // 20с для средних
+        else if (basisPoints > 50) baseWindow = 15000;  // 15с для малых
+        else baseWindow = 10000;                        // 10с для микро-спредов
         
-        // Учитываем волатильность токена (калиброванные коэффициенты)
-        const volatilityMultiplier = this.getCalibratedVolatilityMultiplier(token);
+        // Корректировка по волатильности токена
+        const volatilityMultiplier = this.getTokenVolatilityMultiplier(token);
         
-        // Учитываем время суток (ликвидность)
-        const timeOfDayMultiplier = this.getTimeOfDayMultiplier();
+        // Корректировка по ликвидности
+        const minLiquidity = Math.min(buyLiquidity || 0, sellLiquidity || 0);
+        const liquidityMultiplier = minLiquidity > 10000 ? 1.2 : 
+                                   minLiquidity > 5000 ? 1.0 : 0.8;
         
-        const finalWindow = Math.min(
-            baseWindow * volatilityMultiplier * timeOfDayMultiplier,
-            this.arbitrageParams.maxExecutionWindow
+        // Время суток (ликвидность рынка)
+        const timeMultiplier = this.getTimeOfDayMultiplier();
+        
+        const finalWindow = baseWindow * volatilityMultiplier * liquidityMultiplier * timeMultiplier;
+        
+        return Math.max(
+            this.arbitrageParams.minExecutionWindow,
+            Math.min(this.arbitrageParams.maxExecutionWindow, finalWindow)
         );
-        
-        return Math.max(finalWindow, this.arbitrageParams.minExecutionWindow);
     }
     
     /**
-     * Калиброванные множители волатильности
+     * Расчет распада цены
      */
-    getCalibratedVolatilityMultiplier(tokenSymbol) {
-        // Калиброванные на основе исторических данных
-        const volatilityMap = {
-            'USDC': 1.4,   // стейблкоины - длинное окно
-            'USDT': 1.4,
-            'WETH': 0.9,   // ETH - средняя волатильность
-            'WBTC': 0.95,  // BTC - чуть лучше ETH
-            'WMATIC': 1.1,  // MATIC - родной токен
-            'LINK': 0.85,  // LINK - высокая волатильность
-            'AAVE': 0.7,   // DeFi токены - очень волатильные
-            'CRV': 0.6     // Governance токены - максимальная волатильность
-        };
-        
-        return volatilityMap[tokenSymbol] || 0.8;
-    }
-    
-    /**
-     * Множитель времени суток
-     */
-    getTimeOfDayMultiplier() {
-        const currentHour = new Date().getUTCHours();
-        
-        // Больше ликвидности = дольше живут арбитражи
-        if (currentHour >= 13 && currentHour <= 21) {
-            return 1.1; // Активные часы (US/EU overlap)
-        } else if (currentHour >= 22 || currentHour <= 6) {
-            return 0.9; // Низкая активность
-        }
-        return 1.0;
-    }
-    
-    /**
-     * Калиброванный расчет временного распада
-     */
-    calculateCalibratedPriceDecay(opportunity, executionTimeMs) {
+    calculatePriceDecay(opportunity, executionTimeMs) {
         const { basisPoints, token } = opportunity;
         const executionTimeSeconds = executionTimeMs / 1000;
         
-        // Адаптивная скорость распада в зависимости от типа токена
+        // Адаптивная скорость распада
         let decayRate = this.arbitrageParams.priceDecayRate;
         
         // Стейблкоины распадают медленнее
         if (['USDC', 'USDT'].includes(token)) {
-            decayRate *= 0.5;
+            decayRate *= 0.6;
         }
-        // Волатильные токены - быстрее
+        // Волатильные токены быстрее
         else if (['AAVE', 'CRV'].includes(token)) {
-            decayRate *= 1.5;
+            decayRate *= 1.4;
         }
         
         // Большие спреды более устойчивы
-        if (basisPoints > 200) {
-            decayRate *= 0.8;
-        } else if (basisPoints < 75) {
-            decayRate *= 1.3;
-        }
+        if (basisPoints > 150) decayRate *= 0.8;
+        else if (basisPoints < 75) decayRate *= 1.3;
         
-        // Модель: комбинация экспоненциального и линейного распада
-        const exponentialDecay = Math.exp(-decayRate * executionTimeSeconds);
-        const linearDecay = Math.max(0, 1 - (decayRate * 0.5 * executionTimeSeconds));
-        
-        // Взвешенная комбинация (70% экспоненциальный, 30% линейный)
-        const combinedDecay = (exponentialDecay * 0.7) + (linearDecay * 0.3);
-        
-        const remainingSpread = basisPoints * combinedDecay;
-        const decayedBasisPoints = basisPoints - remainingSpread;
+        // Экспоненциальный распад
+        const decayFactor = Math.exp(-decayRate * executionTimeSeconds);
+        const remainingSpread = basisPoints * decayFactor;
         
         return {
             originalSpread: basisPoints,
             remainingSpread: Math.round(Math.max(0, remainingSpread)),
-            decayedSpread: Math.round(decayedBasisPoints),
-            decayPercentage: (decayedBasisPoints / basisPoints) * 100,
-            decayModel: 'calibrated_combined',
-            effectiveDecayRate: decayRate
+            decayPercentage: ((basisPoints - remainingSpread) / basisPoints) * 100,
+            decayRate,
+            timeToHalfLife: Math.log(2) / decayRate
         };
     }
     
     /**
-     * Точный расчет скорректированной прибыли
+     * Реалистичный расчет прибыли с учетом всех затрат
      */
-    async calculatePreciseAdjustedProfit(opportunity, priceDecay, provider = null) {
-        const { potentialProfit, inputAmount } = opportunity;
+    async calculateRealisticProfit(opportunity, provider) {
+        const { potentialProfit, inputAmount, token } = opportunity;
         
-        // Корректировка на временной распад
-        const spreadAdjustment = Math.max(0, priceDecay.remainingSpread / priceDecay.originalSpread);
+        // 1. Стоимость газа (реалистичная)
+        const gasCost = await this.calculateGasCosts(token, provider);
         
-        // Улучшенный расчет slippage
-        const slippageCost = this.calculatePreciseSlippage(opportunity, inputAmount);
+        // 2. Комиссии DEX (точные)
+        const dexFees = this.calculateDEXFees(opportunity);
         
-        // Реальная стоимость газа
-        const gasCost = await this.estimateRealGasCosts(provider);
+        // 3. Slippage (на основе ликвидности)
+        const slippageCost = this.calculateSlippageCosts(opportunity);
         
-        // Дополнительные costs (MEV protection, network congestion)
-        const additionalCosts = this.calculateAdditionalCosts(opportunity);
+        // 4. MEV protection и другие скрытые затраты
+        const hiddenCosts = this.calculateHiddenCosts(inputAmount);
         
-        const totalCosts = slippageCost + gasCost + additionalCosts;
-        const adjustedProfit = Math.max(0, (potentialProfit * spreadAdjustment) - totalCosts);
+        const totalCosts = gasCost + dexFees + slippageCost + hiddenCosts;
+        const adjustedProfit = Math.max(0, potentialProfit - totalCosts);
         
         return {
             originalProfit: potentialProfit,
             adjustedProfit,
-            slippageCost,
-            gasCost,
-            additionalCosts,
             totalCosts,
-            profitReduction: potentialProfit - adjustedProfit,
+            breakdown: {
+                gasInUSD: gasCost,
+                dexFees,
+                slippageCost,
+                hiddenCosts
+            },
             profitMargin: (adjustedProfit / inputAmount) * 100,
-            spreadAdjustment,
-            effectiveROI: (adjustedProfit / inputAmount) * 100
+            roi: (adjustedProfit / inputAmount) * 100
         };
     }
     
     /**
-     * Точный расчет slippage
+     * Реальная стоимость газа
      */
-    calculatePreciseSlippage(opportunity, inputAmount) {
-        const { token, buyDex, sellDex } = opportunity;
-        
-        // Базовый slippage
-        let baseSlippage = this.arbitrageParams.slippageFactor;
-        
-        // Корректировка по размеру сделки
-        if (inputAmount > 5000) {
-            baseSlippage *= 1.5; // Больше сделка = больше slippage
-        } else if (inputAmount < 1000) {
-            baseSlippage *= 0.8; // Маленькая сделка = меньше slippage
+    async calculateGasCosts(tokenSymbol, provider) {
+        try {
+            // Обновляем цену газа если нужно
+            await this.updateGasPrice(provider);
+            
+            const gasPrice = this.networkCache.gasPrice.value;
+            const maticPrice = this.networkCache.maticPrice.value;
+            
+            // Реалистичные оценки газа для арбитража
+            const gasEstimates = {
+                'WBTC': 350000,  // WBTC требует больше газа
+                'WETH': 300000,  // ETH стандарт
+                'USDT': 400000,  // USDT известен высоким потреблением
+                'USDC': 280000,  // USDC эффективнее
+                'default': 320000 // По умолчанию
+            };
+            
+            const gasLimit = gasEstimates[tokenSymbol] || gasEstimates.default;
+            
+            // Конвертация в USD
+            const gasInMATIC = (gasPrice * gasLimit) / 1e9; // Gwei to MATIC
+            const gasInUSD = gasInMATIC * maticPrice;
+            
+            return Math.max(0.5, gasInUSD); // Минимум $0.5
+            
+        } catch (error) {
+            logger.logWarning('Failed to calculate gas costs, using estimate', error.message);
+            return 1.5; // Консервативная оценка $1.5
         }
-        
-        // Корректировка по DEX (на основе исторических данных)
-        const dexSlippageMultipliers = {
-            'uniswap': 0.9,    // Лучшая ликвидность
-            'sushiswap': 1.0,  // Средняя ликвидность
-            'quickswap': 1.2   // Ниже ликвидность
-        };
-        
-        const buyMultiplier = dexSlippageMultipliers[buyDex] || 1.0;
-        const sellMultiplier = dexSlippageMultipliers[sellDex] || 1.0;
-        const avgMultiplier = (buyMultiplier + sellMultiplier) / 2;
-        
-        // Корректировка по токену
-        const tokenSlippageMultipliers = {
-            'USDC': 0.5,   // Минимальный slippage
-            'USDT': 0.5,
-            'WETH': 0.8,   // Хорошая ликвидность
-            'WBTC': 0.9,
-            'WMATIC': 0.7,
-            'LINK': 1.2,   // Средняя ликвидность
-            'AAVE': 1.5,   // Высокий slippage
-            'CRV': 1.8     // Очень высокий slippage
-        };
-        
-        const tokenMultiplier = tokenSlippageMultipliers[token] || 1.0;
-        
-        const finalSlippage = baseSlippage * avgMultiplier * tokenMultiplier;
-        return inputAmount * finalSlippage;
     }
     
     /**
-     * Расчет дополнительных costs
+     * Точные комиссии DEX
      */
-    calculateAdditionalCosts(opportunity) {
-        const { inputAmount } = opportunity;
+    calculateDEXFees(opportunity) {
+        const { inputAmount, buyDex, sellDex } = opportunity;
         
-        // MEV protection cost (приблизительно)
-        const mevCost = inputAmount * 0.0005; // 0.05%
+        // Комиссии разных DEX
+        const dexFees = {
+            'sushiswap': 0.003,   // 0.3%
+            'quickswap': 0.003,   // 0.3%
+            'uniswap': 0.003,     // 0.3% (может варьироваться в V3)
+            'default': 0.003
+        };
         
-        // Network congestion cost
-        const congestionCost = inputAmount * 0.0002; // 0.02%
+        const buyFee = dexFees[buyDex] || dexFees.default;
+        const sellFee = dexFees[sellDex] || dexFees.default;
+        
+        return inputAmount * (buyFee + sellFee);
+    }
+    
+    /**
+     * Расчет slippage на основе ликвидности
+     */
+    calculateSlippageCosts(opportunity) {
+        const { inputAmount, buyLiquidity, sellLiquidity } = opportunity;
+        
+        const minLiquidity = Math.min(buyLiquidity || 1000, sellLiquidity || 1000);
+        const tradeRatio = inputAmount / minLiquidity;
+        
+        // Прогрессивный slippage
+        let slippagePercent = 0.001; // 0.1% базовый
+        
+        if (tradeRatio > 0.05) slippagePercent = 0.02;      // 2% для больших сделок
+        else if (tradeRatio > 0.02) slippagePercent = 0.01; // 1% для средних
+        else if (tradeRatio > 0.01) slippagePercent = 0.005; // 0.5% для малых
+        
+        return inputAmount * slippagePercent * 2; // Два свапа
+    }
+    
+    /**
+     * Скрытые затраты (MEV, network congestion)
+     */
+    calculateHiddenCosts(inputAmount) {
+        // MEV protection - реальная проблема
+        const mevCost = inputAmount * 0.0008; // 0.08%
+        
+        // Network congestion surcharge
+        const congestionCost = inputAmount * 0.0003; // 0.03%
         
         return mevCost + congestionCost;
     }
     
     /**
-     * Улучшенная оценка confidence
+     * Расчет вероятности успеха
      */
-    calculateImprovedConfidence(opportunity, executionTime, viabilityWindow) {
+    calculateConfidence(opportunity, executionTime, viabilityWindow) {
         let confidence = 1.0;
-        const { basisPoints, token, buyDex, sellDex } = opportunity;
+        const { basisPoints, token, buyLiquidity, sellLiquidity } = opportunity;
         
-        // 1. Временной фактор (улучшенная формула)
+        // 1. Временной фактор
         const timeRatio = executionTime / viabilityWindow;
-        const timePenalty = Math.min(0.5, timeRatio * 0.6); // Максимум -50%
-        confidence *= (1 - timePenalty);
+        confidence *= Math.max(0.3, 1 - timeRatio * 0.6);
         
-        // 2. Спред фактор (более градуальный)
-        let spreadMultiplier = 1.0;
-        if (basisPoints < 40) {
-            spreadMultiplier = 0.3; // Очень низкая для микро-спредов
-        } else if (basisPoints < 60) {
-            spreadMultiplier = 0.5;
-        } else if (basisPoints < 80) {
-            spreadMultiplier = 0.65;
-        } else if (basisPoints < 120) {
-            spreadMultiplier = 0.8;
-        } else if (basisPoints < 200) {
-            spreadMultiplier = 0.9;
-        }
-        // Для больших спредов не снижаем
-        confidence *= spreadMultiplier;
+        // 2. Спред фактор
+        if (basisPoints < 50) confidence *= 0.4;
+        else if (basisPoints < 75) confidence *= 0.6;
+        else if (basisPoints < 100) confidence *= 0.8;
+        // Большие спреды не штрафуются
         
-        // 3. Токен фактор (калиброванный)
+        // 3. Ликвидность фактор
+        const minLiquidity = Math.min(buyLiquidity || 0, sellLiquidity || 0);
+        if (minLiquidity > 10000) confidence *= 1.0;
+        else if (minLiquidity > 5000) confidence *= 0.9;
+        else if (minLiquidity > 2000) confidence *= 0.7;
+        else confidence *= 0.5;
+        
+        // 4. Токен фактор
         const tokenConfidence = this.getTokenConfidenceFactor(token);
         confidence *= tokenConfidence;
         
-        // 4. DEX фактор (качество ликвидности)
-        const dexConfidence = this.getDexConfidenceFactor(buyDex, sellDex);
-        confidence *= dexConfidence;
-        
-        // 5. Путь фактор (сложность пути)
+        // 5. Путь фактор
         const pathConfidence = this.getPathConfidenceFactor(opportunity);
         confidence *= pathConfidence;
         
-        // 6. Время суток фактор
-        const timeConfidence = this.getTimeOfDayConfidence();
-        confidence *= timeConfidence;
-        
-        return Math.max(0.05, Math.min(0.98, confidence)); // Диапазон 5%-98%
+        return Math.max(0.1, Math.min(0.95, confidence));
     }
     
     /**
-     * Фактор confidence по токену
+     * Проверка жизнеспособности возможности
      */
-    getTokenConfidenceFactor(tokenSymbol) {
-        const tokenFactors = {
-            'USDC': 0.95,  // Очень высокая
-            'USDT': 0.92,
-            'WETH': 0.88,  // Высокая
-            'WBTC': 0.85,
-            'WMATIC': 0.90, // Родной токен
-            'LINK': 0.78,  // Средняя
-            'AAVE': 0.70,  // Ниже средней
-            'CRV': 0.65    // Низкая
-        };
+    isOpportunityViable(confidence, adjustedProfit, opportunity) {
+        const minProfit = 3; // Минимум $3
+        const minConfidence = this.arbitrageParams.confidenceThreshold;
+        const minROI = 0.3; // 0.3% минимальный ROI
         
-        return tokenFactors[tokenSymbol] || 0.75;
+        const roi = (adjustedProfit.adjustedProfit / opportunity.inputAmount) * 100;
+        
+        return confidence >= minConfidence && 
+               adjustedProfit.adjustedProfit >= minProfit &&
+               roi >= minROI;
     }
     
     /**
-     * Фактор confidence по DEX
+     * Получение рекомендации
      */
-    getDexConfidenceFactor(buyDex, sellDex) {
-        const dexFactors = {
-            'uniswap': 0.95,
-            'sushiswap': 0.88,
-            'quickswap': 0.82
-        };
-        
-        const buyFactor = dexFactors[buyDex] || 0.8;
-        const sellFactor = dexFactors[sellDex] || 0.8;
-        
-        return (buyFactor + sellFactor) / 2;
-    }
-    
-    /**
-     * Фактор confidence по пути
-     */
-    getPathConfidenceFactor(opportunity) {
-        const { buyPath, sellPath } = opportunity;
-        let factor = 1.0;
-        
-        // Прямые пути лучше
-        if (buyPath && buyPath.length === 2) factor *= 1.05;
-        if (sellPath && sellPath.length === 2) factor *= 1.05;
-        
-        // Длинные пути хуже
-        const avgPathLength = ((buyPath?.length || 3) + (sellPath?.length || 3)) / 2;
-        if (avgPathLength > 3) {
-            factor *= Math.pow(0.9, avgPathLength - 3);
-        }
-        
-        return Math.max(0.7, factor);
-    }
-    
-    /**
-     * Фактор confidence по времени суток
-     */
-    getTimeOfDayConfidence() {
-        const currentHour = new Date().getUTCHours();
-        
-        if (currentHour >= 13 && currentHour <= 20) {
-            return 1.0; // Пиковая ликвидность
-        } else if (currentHour >= 8 && currentHour <= 12) {
-            return 0.95; // Хорошая ликвидность
-        } else if (currentHour >= 21 && currentHour <= 23) {
-            return 0.9; // Снижающаяся ликвидность
-        } else {
-            return 0.8; // Низкая ликвидность (ночь)
-        }
-    }
-    
-    /**
-     * Реальная оценка газовых затрат
-     */
-    async estimateRealGasCosts(provider = null) {
-        try {
-            let gasPriceGwei = this.dynamicCache.gasPriceCache.price;
-            
-            // Обновить кэш газа если нужно
-            if (provider && Date.now() - this.dynamicCache.gasPriceCache.timestamp > this.dynamicCache.gasPriceCache.expiry) {
-                try {
-                    gasPriceGwei = await this.getCurrentGasPrice(provider);
-                    this.dynamicCache.gasPriceCache = {
-                        price: gasPriceGwei,
-                        timestamp: Date.now(),
-                        expiry: 30000
-                    };
-                } catch (error) {
-                    logger.logDebug('Failed to get current gas price, using cached', error.message);
-                }
-            }
-            
-            // Более точные оценки газа для арбитража
-            const gasEstimates = {
-                approval: 50000,       // ERC20 approve (если нужно)
-                v2Swap: 120000,        // Uniswap V2 style swap
-                v3Swap: 180000,        // Uniswap V3 style swap
-                transfer: 21000,       // Базовый transfer
-                overhead: 30000        // Дополнительные операции
-            };
-            
-            // Адаптивная оценка в зависимости от сложности
-            const estimatedGas = 
-                gasEstimates.approval + 
-                gasEstimates.v2Swap * 2 + // 2 свапа
-                gasEstimates.overhead;
-            
-            // Конвертация в USD
-            const gasCostMatic = (gasPriceGwei * estimatedGas) / 1e9;
-            
-            // Получить цену MATIC
-            let maticPriceUSD = 1;
-            try {
-                maticPriceUSD = await this.getCachedTokenPriceUSD('WMATIC');
-            } catch (error) {
-                logger.logDebug('Failed to get MATIC price, using fallback');
-            }
-            
-            const gasCostUSD = gasCostMatic * maticPriceUSD;
-            
-            return Math.max(0.5, gasCostUSD); // Минимум $0.5
-            
-        } catch (error) {
-            logger.logError('Failed to estimate gas costs', error);
-            return 1.5; // Консервативный fallback
-        }
-    }
-    
-    /**
-     * Получить текущую цену газа
-     */
-    async getCurrentGasPrice(provider) {
-        try {
-            const feeData = await provider.getFeeData();
-            return parseFloat(ethers.formatUnits(feeData.gasPrice, 'gwei'));
-        } catch (error) {
-            return 30; // Default fallback
-        }
-    }
-    
-    /**
-     * Получить кэшированную цену токена в USD
-     */
-    async getCachedTokenPriceUSD(tokenSymbol) {
-        const fallbackPrices = {
-            'WETH': 2000,
-            'WBTC': 35000,
-            'WMATIC': 1,
-            'LINK': 15,
-            'AAVE': 80,
-            'CRV': 0.5,
-            'USDC': 1,
-            'USDT': 1
-        };
-        
-        try {
-            // Попробовать получить из utils, если доступно
-            const { getTokenPriceUSD } = require('./utils');
-            return await getTokenPriceUSD(tokenSymbol);
-        } catch (error) {
-            return fallbackPrices[tokenSymbol] || 1;
-        }
-    }
-    
-    /**
-     * Улучшенные рекомендации
-     */
-    getImprovedRecommendation(confidence, adjustedProfit, executionTime) {
+    getRecommendation(confidence, adjustedProfit, executionTime) {
         const profit = adjustedProfit.adjustedProfit;
-        const roi = adjustedProfit.effectiveROI;
+        const roi = adjustedProfit.roi;
         
-        if (confidence < 0.25 || profit < 1) {
+        if (profit < 3 || confidence < 0.3) {
             return {
                 action: 'SKIP',
-                reason: `${confidence < 0.25 ? 'Very low confidence' : 'Insufficient profit'} (${confidence.toFixed(1)}%, $${profit.toFixed(2)})`,
+                reason: `Low profit/confidence (${profit.toFixed(2)}, ${(confidence*100).toFixed(1)}%)`,
                 urgency: 'none',
                 priority: 0
             };
         }
         
-        if (profit < 3 || roi < 0.2) {
-            return {
-                action: 'MONITOR',
-                reason: `Low profit/ROI (${profit.toFixed(2)}, ${roi.toFixed(2)}%)`,
-                urgency: 'low',
-                priority: 1
-            };
-        }
-        
-        if (confidence > 0.85 && profit > 30 && roi > 2.5) {
+        if (confidence > 0.8 && profit > 20) {
             return {
                 action: 'EXECUTE_IMMEDIATELY',
-                reason: `Excellent opportunity (${confidence.toFixed(1)}%, ${profit.toFixed(2)}, ${roi.toFixed(1)}% ROI)`,
+                reason: `Excellent opportunity (${(confidence*100).toFixed(1)}%, $${profit.toFixed(2)})`,
                 urgency: 'critical',
                 priority: 10
             };
         }
         
-        if (confidence > 0.75 && profit > 20 && roi > 1.5) {
-            return {
-                action: 'EXECUTE_FAST',
-                reason: `High confidence opportunity (${confidence.toFixed(1)}%, ${profit.toFixed(2)})`,
-                urgency: 'high',
-                priority: 8
-            };
-        }
-        
-        if (confidence > 0.65 && profit > 10 && roi > 0.8) {
+        if (confidence > 0.6 && profit > 10) {
             return {
                 action: 'EXECUTE',
-                reason: `Good opportunity (${confidence.toFixed(1)}%, ${profit.toFixed(2)})`,
-                urgency: 'medium',
-                priority: 6
+                reason: `Good opportunity (${(confidence*100).toFixed(1)}%, $${profit.toFixed(2)})`,
+                urgency: 'high',
+                priority: 7
             };
         }
         
-        if (executionTime > 25000) {
+        if (confidence > 0.4 && profit > 5) {
             return {
                 action: 'MONITOR',
-                reason: `Slow execution expected (${(executionTime/1000).toFixed(1)}s)`,
-                urgency: 'low',
-                priority: 2
-            };
-        }
-        
-        if (confidence > 0.55 && profit > 5 && roi > 0.4) {
-            return {
-                action: 'CONSIDER',
-                reason: `Marginal opportunity (${confidence.toFixed(1)}%, ${profit.toFixed(2)})`,
-                urgency: 'low',
-                priority: 3
+                reason: `Marginal opportunity (${(confidence*100).toFixed(1)}%, $${profit.toFixed(2)})`,
+                urgency: 'medium',
+                priority: 4
             };
         }
         
         return {
             action: 'SKIP',
-            reason: `Below threshold (${confidence.toFixed(1)}%, ${profit.toFixed(2)})`,
-            urgency: 'none',
-            priority: 0
+            reason: `Below threshold (${(confidence*100).toFixed(1)}%, $${profit.toFixed(2)})`,
+            urgency: 'low',
+            priority: 1
         };
     }
     
-    /**
-     * Проверить актуальность возможности
-     */
-    isOpportunityStillValid(timingData) {
-        const now = Date.now();
-        const timeElapsed = now - timingData.discoveryTime;
-        const timeRemaining = Math.max(0, timingData.deadline - now);
+    // Вспомогательные методы
+    
+    getPathComplexity(opportunity) {
+        const buyPathLength = opportunity.buyPath?.length || 2;
+        const sellPathLength = opportunity.sellPath?.length || 2;
+        return (buyPathLength + sellPathLength - 4) / 4; // Нормализовано от 0 до 1
+    }
+    
+    getNetworkLoadMultiplier() {
+        const currentHour = new Date().getUTCHours();
+        // Пиковые часы UTC (когда активны США и Европа)
+        if (currentHour >= 13 && currentHour <= 21) return 1.3;
+        if (currentHour >= 22 || currentHour <= 6) return 0.8;
+        return 1.0;
+    }
+    
+    getTokenVolatilityMultiplier(tokenSymbol) {
+        const volatilityMap = {
+            'USDC': 1.5,   // Стейблкоины - длинное окно
+            'USDT': 1.5,
+            'WETH': 1.0,   // ETH - стандарт
+            'WBTC': 1.1,   // BTC чуть стабильнее
+            'WMATIC': 1.2, // Родной токен
+            'LINK': 0.8,   // Волатильный
+            'AAVE': 0.7,   // Очень волатильный
+            'CRV': 0.6     // Максимально волатильный
+        };
+        return volatilityMap[tokenSymbol] || 0.9;
+    }
+    
+    getTimeOfDayMultiplier() {
+        const currentHour = new Date().getUTCHours();
+        if (currentHour >= 13 && currentHour <= 20) return 1.1; // Активные часы
+        if (currentHour >= 21 || currentHour <= 6) return 0.9;  // Тихие часы
+        return 1.0;
+    }
+    
+    getTokenConfidenceFactor(tokenSymbol) {
+        const confidenceMap = {
+            'USDC': 0.95,
+            'USDT': 0.9,
+            'WETH': 0.9,
+            'WBTC': 0.85,
+            'WMATIC': 0.9,
+            'LINK': 0.8,
+            'AAVE': 0.75,
+            'CRV': 0.7
+        };
+        return confidenceMap[tokenSymbol] || 0.8;
+    }
+    
+    getPathConfidenceFactor(opportunity) {
+        const buyPathLength = opportunity.buyPath?.length || 2;
+        const sellPathLength = opportunity.sellPath?.length || 2;
         
-        return {
-            isValid: now < timingData.deadline,
-            timeElapsed,
-            timeRemaining,
-            urgency: this.getUrgencyLevel(timeRemaining),
-            percentageTimeElapsed: (timeElapsed / timingData.viabilityWindow) * 100,
-            decayedConfidence: timingData.confidence * (timeRemaining / timingData.viabilityWindow)
-        };
+        // Прямые пути лучше
+        if (buyPathLength === 2 && sellPathLength === 2) return 1.0;
+        if (buyPathLength <= 3 && sellPathLength <= 3) return 0.9;
+        return 0.8;
     }
     
-    /**
-     * Получить уровень срочности
-     */
-    getUrgencyLevel(timeRemaining) {
-        if (timeRemaining < 2000) return 'CRITICAL';   // < 2 seconds
-        if (timeRemaining < 5000) return 'HIGH';       // < 5 seconds
-        if (timeRemaining < 10000) return 'MEDIUM';    // < 10 seconds
-        if (timeRemaining < 20000) return 'LOW';       // < 20 seconds
-        return 'NONE';
+    async updateNetworkData(provider) {
+        try {
+            const now = Date.now();
+            
+            // Обновляем данные каждые 2 минуты
+            if (now - this.networkCache.gasPrice.timestamp > 120000) {
+                await this.updateGasPrice(provider);
+            }
+            
+        } catch (error) {
+            logger.logDebug('Failed to update network data', error.message);
+        }
     }
     
-    /**
-     * Получить метрики сети
-     */
+    async updateGasPrice(provider) {
+        try {
+            if (!provider) return;
+            
+            const feeData = await provider.getFeeData();
+            const gasPriceGwei = parseFloat(ethers.formatUnits(feeData.gasPrice || '25000000000', 'gwei'));
+            
+            this.networkCache.gasPrice = {
+                value: gasPriceGwei,
+                timestamp: Date.now()
+            };
+            
+        } catch (error) {
+            logger.logDebug('Failed to update gas price', error.message);
+        }
+    }
+    
     getNetworkMetrics() {
         return {
-            avgBlockTime: this.dynamicCache.avgBlockTime.value,
-            gasPrice: this.dynamicCache.gasPriceCache.price,
-            networkLoad: this.getNetworkLoadMultiplier(),
+            gasPrice: this.networkCache.gasPrice.value,
+            maticPrice: this.networkCache.maticPrice.value,
+            avgBlockTime: this.networkCache.blockTime.value,
             lastUpdated: Math.max(
-                this.dynamicCache.avgBlockTime.timestamp,
-                this.dynamicCache.gasPriceCache.timestamp
+                this.networkCache.gasPrice.timestamp,
+                this.networkCache.maticPrice.timestamp
             )
         };
     }
     
-    /**
-     * Обновить статистику калибровки
-     */
-    updateCalibrationStats(timingData) {
-        this.calibrationStats.totalOpportunities++;
+    getFallbackTiming(opportunity) {
+        // Простой fallback расчет
+        const adjustedProfit = Math.max(0, opportunity.potentialProfit - 3); // $3 затраты
         
-        // Здесь можно добавить логику для отслеживания точности предсказаний
-        // когда будут доступны реальные результаты выполнения арбитража
+        return {
+            isViable: adjustedProfit > 2,
+            confidence: 0.5,
+            adjustedProfit: {
+                adjustedProfit,
+                totalCosts: 3,
+                gasInUSD: 1.5,
+                dexFees: 1.5,
+                slippageCost: 0,
+                hiddenCosts: 0
+            },
+            executionTime: 8000,
+            deadline: Date.now() + 15000,
+            recommendation: {
+                action: adjustedProfit > 5 ? 'MONITOR' : 'SKIP',
+                reason: 'Fallback calculation',
+                priority: 3
+            }
+        };
     }
     
-    /**
-     * Получить статистику калибровки
-     */
+    updateAverageConfidence(confidence) {
+        const totalCalcs = this.stats.totalCalculations;
+        const currentAvg = this.stats.avgConfidence;
+        this.stats.avgConfidence = ((currentAvg * (totalCalcs - 1)) + confidence) / totalCalcs;
+    }
+    
     getCalibrationStats() {
-        const accuracy = this.calibrationStats.totalOpportunities > 0 ? 
-            (this.calibrationStats.successfulPredictions / this.calibrationStats.totalOpportunities) * 100 : 0;
-            
+        const viabilityRate = this.stats.totalCalculations > 0 ?
+            (this.stats.viableOpportunities / this.stats.totalCalculations) * 100 : 0;
+        
         return {
-            ...this.calibrationStats,
-            accuracy: accuracy.toFixed(1) + '%',
-            avgTimeError: this.calibrationStats.timeErrors.length > 0 ?
-                this.calibrationStats.timeErrors.reduce((a, b) => a + b, 0) / this.calibrationStats.timeErrors.length : 0
-        };
-    }
-    
-    /**
-     * Сбросить статистику
-     */
-    resetCalibrationStats() {
-        this.calibrationStats = {
-            totalOpportunities: 0,
-            successfulPredictions: 0,
-            timeErrors: [],
-            priceDecayErrors: []
-        };
-    }
-    
-    /**
-     * Обновить параметры сети (для ручной настройки)
-     */
-    updateNetworkTiming(newTiming) {
-        this.networkTiming = { ...this.networkTiming, ...newTiming };
-        logger.logInfo('Network timing parameters updated', newTiming);
-    }
-    
-    /**
-     * Обновить параметры арбитража (для ручной настройки)
-     */
-    updateArbitrageParams(newParams) {
-        this.arbitrageParams = { ...this.arbitrageParams, ...newParams };
-        logger.logInfo('Arbitrage parameters updated', newParams);
-    }
-    
-    /**
-     * Получить текущие параметры
-     */
-    getCurrentParameters() {
-        return {
-            networkTiming: this.networkTiming,
-            arbitrageParams: this.arbitrageParams,
-            dynamicCache: this.dynamicCache,
-            calibrationStats: this.getCalibrationStats()
+            totalCalculations: this.stats.totalCalculations,
+            viableOpportunities: this.stats.viableOpportunities,
+            viabilityRate: viabilityRate.toFixed(1) + '%',
+            avgConfidence: (this.stats.avgConfidence * 100).toFixed(1) + '%'
         };
     }
 }

@@ -42,14 +42,6 @@
     }
   },
   "dexes": {
-    "uniswap": {
-      "name": "Uniswap V3",
-      "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
-      "quoter": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
-      "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
-      "type": "v3",
-      "fees": [500, 3000, 10000]
-    },
     "sushiswap": {
       "name": "SushiSwap",
       "router": "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",
@@ -61,29 +53,21 @@
       "router": "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",
       "factory": "0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32",
       "type": "v2"
+    },
+    "uniswap": {
+      "name": "Uniswap V3",
+      "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+      "quoter": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
+      "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      "type": "v3",
+      "fees": [500, 3000, 10000]
     }
   },
   "tradingPaths": {
-    "CRV": [
-      ["CRV", "WETH", "USDC"],
-      ["CRV", "WMATIC", "USDC"],
-      ["CRV", "USDC"],
-      ["CRV", "WETH"],
-      ["CRV", "USDT"]
-    ],
-    "LINK": [
-      ["LINK", "WETH", "USDC"],
-      ["LINK", "WMATIC", "USDC"],
-      ["LINK", "USDC"],
-      ["LINK", "WETH"],
-      ["LINK", "USDT"]
-    ],
-    "AAVE": [
-      ["AAVE", "WETH", "USDC"],
-      ["AAVE", "WMATIC", "USDC"],
-      ["AAVE", "USDC"],
-      ["AAVE", "WETH"],
-      ["AAVE", "USDT"]
+    "WMATIC": [
+      ["WMATIC", "USDC"],
+      ["WMATIC", "USDT"],
+      ["WMATIC", "WETH"]
     ],
     "WETH": [
       ["WETH", "USDC"],
@@ -92,38 +76,113 @@
       ["WETH", "WBTC"]
     ],
     "WBTC": [
-      ["WBTC", "WETH", "USDC"],
       ["WBTC", "USDC"],
       ["WBTC", "WETH"],
       ["WBTC", "USDT"]
     ],
-    "USDT": [
-      ["USDT", "USDC"],
-      ["USDT", "WETH"],
-      ["USDT", "WMATIC"]
-    ],
     "USDC": [
       ["USDC", "USDT"],
-      ["USDC", "WETH"],
       ["USDC", "WMATIC"],
+      ["USDC", "WETH"],
       ["USDC", "WBTC"]
     ],
-    "WMATIC": [
-      ["WMATIC", "USDC"],
-      ["WMATIC", "WETH"],
-      ["WMATIC", "USDT"]
+    "USDT": [
+      ["USDT", "USDC"],
+      ["USDT", "WMATIC"],
+      ["USDT", "WETH"]
+    ],
+    "LINK": [
+      ["LINK", "USDC"],
+      ["LINK", "WETH"],
+      ["LINK", "WMATIC"]
+    ],
+    "AAVE": [
+      ["AAVE", "USDC"],
+      ["AAVE", "WETH"],
+      ["AAVE", "WMATIC"]
+    ],
+    "CRV": [
+      ["CRV", "USDC"],
+      ["CRV", "WETH"],
+      ["CRV", "WMATIC"]
     ]
   },
   "settings": {
-    "minBasisPointsPerTrade": 50,
-    "maxSlippageBps": 300,
-    "checkIntervalMs": 30000,
     "inputAmountUSD": 1000,
-    "maxRetries": 3,
-    "retryDelayMs": 2000,
+    "minBasisPointsPerTrade": 50,
+    "checkIntervalMs": 15000,
+    "priceTimeoutMs": 8000,
+    "maxRetries": 2,
+    "retryDelayMs": 1000,
+    "maxConcurrentRequests": 3,
     "notificationCooldownMs": 300000,
-    "priceTimeoutMs": 15000,
-    "rpcTimeoutMs": 10000,
-    "maxConcurrentRequests": 5
+    "minLiquidityUSD": {
+      "WBTC": 2000,
+      "WETH": 1500,
+      "WMATIC": 1000,
+      "USDC": 500,
+      "USDT": 500,
+      "LINK": 1000,
+      "AAVE": 1000,
+      "CRV": 1000
+    },
+    "slippageTolerance": {
+      "WBTC": 0.8,
+      "WETH": 0.5,
+      "WMATIC": 0.3,
+      "USDC": 0.1,
+      "USDT": 0.1,
+      "LINK": 0.5,
+      "AAVE": 0.8,
+      "CRV": 1.0
+    },
+    "gasLimits": {
+      "approve": 60000,
+      "swap": {
+        "WBTC": 350000,
+        "WETH": 300000,
+        "USDT": 400000,
+        "USDC": 280000,
+        "WMATIC": 250000,
+        "LINK": 290000,
+        "AAVE": 310000,
+        "CRV": 300000
+      }
+    },
+    "profitThresholds": {
+      "minimum": 3,
+      "good": 10,
+      "excellent": 20
+    },
+    "confidenceThresholds": {
+      "minimum": 0.4,
+      "good": 0.6,
+      "excellent": 0.8
+    }
+  },
+  "network": {
+    "chainId": 137,
+    "name": "Polygon",
+    "nativeCurrency": {
+      "name": "MATIC",
+      "symbol": "MATIC",
+      "decimals": 18
+    },
+    "blockExplorer": "https://polygonscan.com",
+    "avgBlockTime": 2200,
+    "confirmations": 1
+  },
+  "monitoring": {
+    "enableDetailedLogging": true,
+    "logLevel": "info",
+    "statsReportingInterval": 300000,
+    "healthCheckInterval": 60000,
+    "cacheCleanupInterval": 3600000
+  },
+  "fallbacks": {
+    "defaultGasPrice": "25",
+    "defaultSlippage": 0.5,
+    "defaultTimeout": 10000,
+    "maxFailuresBeforeSwitch": 3
   }
 }

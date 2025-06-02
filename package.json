@@ -1,66 +1,48 @@
 {
   "name": "polygon-arbitrage-bot",
-  "version": "1.0.0",
-  "description": "Production-ready arbitrage monitoring bot for Polygon DEX platforms",
-  "main": "scripts/trade.js",
+  "version": "2.0.0",
+  "description": "Optimized Polygon DEX Arbitrage Bot with Real-time Monitoring",
+  "main": "bot.js",
   "scripts": {
-    "start": "node scripts/trade.js",
-    "test": "node scripts/test.js",
-    "compile": "npx hardhat compile",
-    "clean": "npx hardhat clean",
-    "deploy": "npx hardhat run scripts/deploy.js --network polygon",
-    "deploy:local": "npx hardhat run scripts/deploy.js --network hardhat",
-    "interact": "npx hardhat run scripts/contract-interaction.js --network polygon",
-    "contract:info": "npx hardhat run scripts/contract-interaction.js --network polygon info",
-    "contract:balances": "npx hardhat run scripts/contract-interaction.js --network polygon balances",
-    "contract:test": "npx hardhat run scripts/contract-interaction.js --network polygon test",
-    "hardhat": "npx hardhat run scripts/trade.js --network polygon",
-    "docker:build": "docker build -t polygon-arbitrage-bot .",
-    "docker:run": "docker-compose up -d",
-    "docker:stop": "docker-compose down",
-    "docker:logs": "docker-compose logs -f",
-    "lint": "eslint scripts/ --fix",
-    "validate": "node scripts/validate-config.js",
-    "install:force": "npm install --force"
-  },
-  "dependencies": {
-    "ethers": "^6.13.4",
-    "hardhat": "^2.22.0",
-    "dotenv": "^16.3.1",
-    "node-telegram-bot-api": "^0.64.0",
-    "fs-extra": "^11.2.0",
-    "axios": "^1.6.3"
-  },
-  "devDependencies": {
-    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "@nomicfoundation/hardhat-ethers": "^3.0.8",
-    "@openzeppelin/contracts": "^5.0.2",
-    "chai": "^4.3.10",
-    "eslint": "^8.56.0"
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "test": "node test/test-connections.js",
+    "test-telegram": "node test/test-telegram.js",
+    "test-prices": "node test/test-prices.js",
+    "test-all": "npm run test && npm run test-prices && npm run test-telegram",
+    "logs": "tail -f logs/bot.log",
+    "clear-cache": "rm -rf data/* cache/*",
+    "setup": "node setup.js"
   },
   "keywords": [
     "arbitrage",
     "polygon",
     "defi",
-    "bot",
-    "uniswap",
-    "sushiswap",
-    "quickswap",
-    "ethereum",
-    "trading"
+    "trading",
+    "cryptocurrency",
+    "dex",
+    "ethereum"
   ],
-  "author": "Polygon Arbitrage Bot Team",
+  "author": "Your Name",
   "license": "MIT",
+  "dependencies": {
+    "ethers": "^6.8.0",
+    "node-telegram-bot-api": "^0.64.0",
+    "fs-extra": "^11.1.1",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.0.0"
+    "node": ">=16.0.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/polygon-arbitrage-bot.git"
+    "url": "https://github.com/yourusername/polygon-arbitrage-bot.git"
   },
   "bugs": {
-    "url": "https://github.com/your-username/polygon-arbitrage-bot/issues"
+    "url": "https://github.com/yourusername/polygon-arbitrage-bot/issues"
   },
-  "homepage": "https://github.com/your-username/polygon-arbitrage-bot#readme"
+  "homepage": "https://github.com/yourusername/polygon-arbitrage-bot#readme"
 }

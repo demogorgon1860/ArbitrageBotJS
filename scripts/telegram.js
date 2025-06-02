@@ -1,446 +1,515 @@
 const TelegramBot = require('node-telegram-bot-api');
 const logger = require('./logger');
-const { formatPrice, getCurrentTimestamp } = require('./utils');
+const { formatCurrency, formatPercentage, getCurrentTimestamp } = require('./utils');
 
 class TelegramNotifier {
     constructor() {
         this.bot = null;
         this.chatId = null;
-        this.enabled = false;
+        this.isConfigured = false;
+        this.messageQueue = [];
+        this.isProcessingQueue = false;
+        this.rateLimitDelay = 1000; // 1 секунда между сообщениями
         
         this.init();
     }
     
     init() {
         try {
-            const token = process.env.TELEGRAM_BOT_TOKEN;
+            const botToken = process.env.TELEGRAM_BOT_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
             
-            if (!token || !chatId) {
-                logger.logWarning('Telegram credentials not found - notifications disabled');
+            if (!botToken || !chatId || botToken === 'undefined' || chatId === 'undefined') {
+                logger.logWarning('⚠️ Telegram not configured - notifications disabled');
                 return;
             }
             
-            this.bot = new TelegramBot(token, { polling: false });
+            this.bot = new TelegramBot(botToken, { polling: false });
             this.chatId = chatId;
-            this.enabled = true;
+            this.isConfigured = true;
             
-            logger.logSuccess('Telegram notifier initialized');
+            logger.logSuccess('✅ Telegram notifier configured');
+            
+            // Запуск обработки очереди
+            this.processMessageQueue();
+            
         } catch (error) {
-            logger.logError('Failed to initialize Telegram bot', error);
+            logger.logError('❌ Failed to initialize Telegram notifier', error);
+            this.isConfigured = false;
         }
     }
     
     /**
-     * Send message to Telegram
+     * Получение статуса конфигурации
      */
-    async sendMessage(message, options = {}) {
-        if (!this.enabled) {
-            logger.logDebug('Telegram not enabled, skipping message');
-            return false;
-        }
-        
-        try {
-            const defaultOptions = {
-                parse_mode: 'HTML',
-                disable_web_page_preview: true
-            };
-            
-            const finalOptions = { ...defaultOptions, ...options };
-            
-            await this.bot.sendMessage(this.chatId, message, finalOptions);
-            logger.logDebug('Telegram message sent successfully');
-            return true;
-            
-        } catch (error) {
-            logger.logError('Failed to send Telegram message', error);
-            return false;
-        }
+    getStatus() {
+        return {
+            configured: this.isConfigured,
+            queueLength: this.messageQueue.length,
+            lastSent: this.lastMessageTime || null
+        };
     }
     
     /**
-     * Send arbitrage opportunity alert
+     * Отправка уведомления о найденном арбитраже
      */
     async sendArbitrageAlert(opportunity) {
-        const message = this.formatArbitrageMessage(opportunity);
-        return await this.sendMessage(message);
+        if (!this.isConfigured) return false;
+        
+        try {
+            const message = this.formatArbitrageMessage(opportunity);
+            await this.queueMessage(message, { parse_mode: 'Markdown' });
+            return true;
+        } catch (error) {
+            logger.logError('Failed to send arbitrage alert', error);
+            return false;
+        }
     }
     
     /**
-     * Format arbitrage opportunity message
+     * Отправка уведомления о запуске бота
+     */
+    async sendStartupNotification() {
+        if (!this.isConfigured) return false;
+        
+        try {
+            const message = this.formatStartupMessage();
+            await this.queueMessage(message, { parse_mode: 'Markdown' });
+            return true;
+        } catch (error) {
+            logger.logError('Failed to send startup notification', error);
+            return false;
+        }
+    }
+    
+    /**
+     * Отправка уведомления об остановке бота
+     */
+    async sendShutdownNotification(stats) {
+        if (!this.isConfigured) return false;
+        
+        try {
+            const message = this.formatShutdownMessage(stats);
+            await this.queueMessage(message, { parse_mode: 'Markdown' });
+            
+            // Обрабатываем очередь немедленно при shutdown
+            await this.flushMessageQueue();
+            return true;
+        } catch (error) {
+            logger.logError('Failed to send shutdown notification', error);
+            return false;
+        }
+    }
+    
+    /**
+     * Отправка периодического отчета
+     */
+    async sendPeriodicReport(stats) {
+        if (!this.isConfigured) return false;
+        
+        try {
+            const message = this.formatPeriodicReport(stats);
+            await this.queueMessage(message, { parse_mode: 'Markdown' });
+            return true;
+        } catch (error) {
+            logger.logError('Failed to send periodic report', error);
+            return false;
+        }
+    }
+    
+    /**
+     * Отправка уведомления об ошибке
+     */
+    async sendErrorAlert(error, context = '') {
+        if (!this.isConfigured) return false;
+        
+        try {
+            const message = this.formatErrorMessage(error, context);
+            await this.queueMessage(message, { parse_mode: 'Markdown' });
+            return true;
+        } catch (sendError) {
+            logger.logError('Failed to send error alert', sendError);
+            return false;
+        }
+    }
+    
+    /**
+     * Форматирование сообщения об арбитраже
      */
     formatArbitrageMessage(opportunity) {
         const {
             token,
+            basisPoints,
             buyDex,
             sellDex,
             buyPrice,
             sellPrice,
-            basisPoints,
-            percentage,
-            inputAmount,
             potentialProfit,
             adjustedProfit,
             confidence,
-            executionWindow,
-            deadline,
-            timing,
-            buyPath,
-            sellPath,
-            timestamp
+            inputAmount,
+            buyLiquidity,
+            sellLiquidity,
+            estimatedSlippage,
+            timing
         } = opportunity;
         
-        const profitEmoji = this.getProfitEmoji(basisPoints);
-        const riskLevel = this.getRiskLevel(basisPoints);
-        const urgencyEmoji = this.getUrgencyEmoji(timing?.recommendation?.urgency || 'low');
-        const timeRemaining = deadline ? Math.max(0, deadline - Date.now()) : 0;
+        // Эмодзи для уровня возможности
+        let alertEmoji = '💰';
+        let urgencyText = 'MODERATE';
         
-        return `
-${profitEmoji} <b>Arbitrage Opportunity Found!</b> ${urgencyEmoji}
+        if (adjustedProfit > 20 && confidence > 0.8) {
+            alertEmoji = '🚨💎';
+            urgencyText = 'EXCELLENT';
+        } else if (adjustedProfit > 10 && confidence > 0.6) {
+            alertEmoji = '⚡💰';
+            urgencyText = 'GOOD';
+        }
+        
+        // Форматирование цен
+        const buyPriceFormatted = this.formatPrice(buyPrice);
+        const sellPriceFormatted = this.formatPrice(sellPrice);
+        
+        // Расчет ROI
+        const roi = (adjustedProfit / inputAmount) * 100;
+        
+        // Время выполнения
+        const executionTime = timing?.executionTime ? 
+            `${(timing.executionTime / 1000).toFixed(1)}s` : 'Unknown';
+        
+        // Рекомендация
+        const recommendation = timing?.recommendation?.action || 'MONITOR';
+        const recommendationEmoji = this.getRecommendationEmoji(recommendation);
+        
+        return `${alertEmoji} *ARBITRAGE OPPORTUNITY* ${alertEmoji}
 
-💰 <b>Token:</b> ${token}
-📈 <b>Spread:</b> ${basisPoints} bps (${formatPrice(percentage, 2)}%)
+*Token:* \`${token}\`
+*Quality:* ${urgencyText} (${formatPercentage(confidence * 100, 1)})
 
-🏪 <b>Buy:</b> ${buyDex}
-💵 <b>Price:</b> $${formatPrice(buyPrice)}
+📊 *SPREAD ANALYSIS*
+• Spread: *${basisPoints}* basis points (${formatPercentage(basisPoints / 100, 2)})
+• Buy DEX: \`${buyDex}\` at ${buyPriceFormatted}
+• Sell DEX: \`${sellDex}\` at ${sellPriceFormatted}
 
-🏦 <b>Sell:</b> ${sellDex}
-💵 <b>Price:</b> $${formatPrice(sellPrice)}
+💵 *PROFIT ANALYSIS*
+• Gross Profit: ${formatCurrency(potentialProfit)}
+• Net Profit: *${formatCurrency(adjustedProfit)}*
+• ROI: *${formatPercentage(roi, 2)}*
+• Trade Size: ${formatCurrency(inputAmount)}
 
-💸 <b>Input Amount:</b> $${inputAmount}
-🎯 <b>Theoretical Profit:</b> $${formatPrice(potentialProfit, 2)}
-💎 <b>Adjusted Profit:</b> $${formatPrice(adjustedProfit, 2)}
+🔄 *EXECUTION DETAILS*
+• Estimated Time: ${executionTime}
+• Buy Slippage: ${formatPercentage(estimatedSlippage?.buy || 0.3, 1)}
+• Sell Slippage: ${formatPercentage(estimatedSlippage?.sell || 0.3, 1)}
 
-⚡ <b>Risk Level:</b> ${riskLevel}
-🎲 <b>Success Probability:</b> ${confidence ? (confidence * 100).toFixed(1) : 'N/A'}%
-⏱️ <b>Execution Time:</b> ${executionWindow ? (executionWindow / 1000).toFixed(1) : 'N/A'}s
-⏰ <b>Window Remaining:</b> ${timeRemaining ? (timeRemaining / 1000).toFixed(1) : 'N/A'}s
+💧 *LIQUIDITY*
+• Buy Liquidity: ${formatCurrency(buyLiquidity)}
+• Sell Liquidity: ${formatCurrency(sellLiquidity)}
 
-${timing?.adjustedProfit ? `
-💰 <b>Profit Breakdown:</b>
-• Original: $${formatPrice(timing.adjustedProfit.originalProfit, 2)}
-• Slippage Cost: $${formatPrice(timing.adjustedProfit.slippageCost, 2)}
-• Gas Cost: $${formatPrice(timing.adjustedProfit.gasCost, 2)}
-• Final: $${formatPrice(timing.adjustedProfit.adjustedProfit, 2)}
-` : ''}
+${recommendationEmoji} *RECOMMENDATION: ${recommendation}*
 
-${timing?.priceDecay ? `
-📉 <b>Time Decay:</b>
-• Original Spread: ${timing.priceDecay.originalSpread} bps
-• Expected Remaining: ${timing.priceDecay.remainingSpread} bps
-• Decay Rate: ${timing.priceDecay.decayPercentage.toFixed(1)}%
-` : ''}
+⏰ *Time:* ${getCurrentTimestamp()}
 
-🤖 <b>Recommendation:</b> ${timing?.recommendation?.action || 'MONITOR'}
-${timing?.recommendation?.reason ? `<i>${timing.recommendation.reason}</i>` : ''}
-
-${buyPath ? `🛣️ <b>Buy Path:</b> ${buyPath.join(' → ')}` : ''}
-${sellPath ? `🛣️ <b>Sell Path:</b> ${sellPath.join(' → ')}` : ''}
-
-⏰ <b>Discovered:</b> ${new Date(timestamp).toLocaleString()}
-
-<i>⚠️ This is for monitoring only - no trades executed
-💡 Profits are estimated and include time decay analysis</i>
-        `.trim();
+${this.generatePolygonscanLinks(token)}`;
     }
     
     /**
-     * Send status update
+     * Форматирование стартового сообщения
      */
-    async sendStatusUpdate(status) {
+    formatStartupMessage() {
+        const timestamp = getCurrentTimestamp();
+        
+        return `🚀 *POLYGON ARBITRAGE BOT STARTED*
+
+📊 *Configuration:*
+• Network: Polygon (MATIC)
+• DEXes: QuickSwap, SushiSwap, Uniswap V3
+• Trade Size: $1,000
+• Min Spread: 50 basis points
+
+🎯 *Monitoring:*
+• WMATIC, WETH, WBTC, USDC, USDT
+• LINK, AAVE, CRV
+
+⚡ *Features:*
+• Real-time price monitoring
+• Advanced profit calculations
+• MEV protection analysis
+• Liquidity validation
+
+🕐 *Started:* ${timestamp}
+
+_Bot is now actively searching for profitable arbitrage opportunities..._`;
+    }
+    
+    /**
+     * Форматирование сообщения об остановке
+     */
+    formatShutdownMessage(stats) {
         const {
-            running,
             uptime,
-            opportunitiesFound,
-            lastCheck,
-            activeTokens,
-            activeDexes,
-            rpcProviders,
             totalChecks,
-            errors
-        } = status;
+            opportunitiesFound,
+            profitableOpportunities,
+            totalPotentialProfit,
+            bestOpportunity,
+            successRate,
+            profitabilityRate
+        } = stats;
         
-        const statusIcon = running ? '🟢' : '🔴';
-        const message = `
-${statusIcon} <b>Arbitrage Bot Status Update</b>
-
-📊 <b>Status:</b> ${running ? 'Running' : 'Stopped'}
-⏰ <b>Uptime:</b> ${uptime}
-🎯 <b>Opportunities Found:</b> ${opportunitiesFound}
-🔍 <b>Total Checks:</b> ${totalChecks || 0}
-❌ <b>Errors:</b> ${errors || 0}
-📈 <b>Last Check:</b> ${lastCheck}
-
-⚙️ <b>Configuration:</b>
-• Active Tokens: ${activeTokens}
-• Active DEXes: ${activeDexes}
-• RPC Providers: ${rpcProviders || 'N/A'}
-
-⏰ <b>Update Time:</b> ${new Date().toLocaleString()}
-        `.trim();
+        let bestOpportunityText = 'None found';
+        if (bestOpportunity) {
+            bestOpportunityText = `${bestOpportunity.token}: ${bestOpportunity.basisPoints} bps (${formatCurrency(bestOpportunity.adjustedProfit)})`;
+        }
         
-        return await this.sendMessage(message);
+        return `🛑 *ARBITRAGE BOT STOPPED*
+
+📊 *Session Summary:*
+• Uptime: ${uptime}
+• Total Checks: ${totalChecks}
+• Success Rate: ${successRate}
+
+🎯 *Opportunities:*
+• Found: ${opportunitiesFound}
+• Profitable: ${profitableOpportunities}
+• Profitability Rate: ${profitabilityRate}
+• Total Potential: ${formatCurrency(totalPotentialProfit)}
+
+🏆 *Best Opportunity:*
+${bestOpportunityText}
+
+⏰ *Stopped:* ${getCurrentTimestamp()}
+
+_Thank you for using Polygon Arbitrage Bot!_`;
     }
     
     /**
-     * Send error alert
+     * Форматирование периодического отчета
      */
-    async sendErrorAlert(title, errorInfo = {}) {
-        const message = `
-🚨 <b>Bot Error Alert</b>
-
-❌ <b>Error:</b> ${title}
-${errorInfo.details ? `📝 <b>Details:</b> ${errorInfo.details}` : ''}
-${errorInfo.token ? `🪙 <b>Token:</b> ${errorInfo.token}` : ''}
-${errorInfo.dex ? `🏪 <b>DEX:</b> ${errorInfo.dex}` : ''}
-
-⏰ <b>Time:</b> ${new Date().toLocaleString()}
-
-<i>Bot will attempt automatic recovery...</i>
-        `.trim();
-        
-        return await this.sendMessage(message);
-    }
-    
-    /**
-     * Send daily summary
-     */
-    async sendDailySummary(summary) {
+    formatPeriodicReport(stats) {
         const {
-            totalOpportunities,
-            topToken,
-            topDex,
-            averageSpread,
-            totalProfit,
             uptime,
-            checksPerformed
-        } = summary;
+            totalChecks,
+            opportunitiesFound,
+            profitableOpportunities,
+            totalPotentialProfit,
+            averageSpread,
+            successRate,
+            activeProviders,
+            lastSuccessfulCheck
+        } = stats;
         
-        const message = `
-📊 <b>Daily Arbitrage Summary</b>
-
-🎯 <b>Opportunities Found:</b> ${totalOpportunities}
-🥇 <b>Top Token:</b> ${topToken || 'N/A'}
-🏆 <b>Top DEX:</b> ${topDex || 'N/A'}
-📈 <b>Average Spread:</b> ${averageSpread ? averageSpread.toFixed(1) : 'N/A'} bps
-💰 <b>Total Potential Profit:</b> $${formatPrice(totalProfit, 2)}
-⏰ <b>Bot Uptime:</b> ${uptime}
-🔍 <b>Checks Performed:</b> ${checksPerformed}
-
-📅 <b>Date:</b> ${new Date().toLocaleDateString()}
-        `.trim();
+        const timeSinceLastCheck = lastSuccessfulCheck ? 
+            `${Math.round((Date.now() - new Date(lastSuccessfulCheck)) / 1000)}s ago` : 'Never';
         
-        return await this.sendMessage(message);
+        return `📊 *PERIODIC REPORT*
+
+⏱️ *Uptime:* ${uptime}
+🔍 *Monitoring:* Active (${activeProviders} RPC providers)
+📡 *Last Check:* ${timeSinceLastCheck}
+
+📈 *Performance:*
+• Total Checks: ${totalChecks}
+• Success Rate: ${successRate}
+• Opportunities Found: ${opportunitiesFound}
+• Profitable Ops: ${profitableOpportunities}
+
+💰 *Profit Analysis:*
+• Total Potential: ${formatCurrency(totalPotentialProfit)}
+• Average Spread: ${averageSpread.toFixed(1)} bps
+
+🕐 *Report Time:* ${getCurrentTimestamp()}
+
+_Bot continues monitoring for arbitrage opportunities..._`;
     }
     
     /**
-     * Get profit emoji based on basis points
+     * Форматирование сообщения об ошибке
      */
-    getProfitEmoji(basisPoints) {
-        if (basisPoints >= 500) return '🚀';
-        if (basisPoints >= 300) return '💰';
-        if (basisPoints >= 150) return '💵';
-        if (basisPoints >= 100) return '💸';
-        return '🪙';
+    formatErrorMessage(error, context) {
+        const errorMessage = error.message || 'Unknown error';
+        const errorStack = error.stack ? error.stack.split('\n')[0] : '';
+        
+        return `🚨 *ERROR ALERT*
+
+⚠️ *Context:* ${context || 'General operation'}
+📝 *Error:* \`${errorMessage}\`
+🔍 *Details:* \`${errorStack}\`
+
+⏰ *Time:* ${getCurrentTimestamp()}
+
+_Bot will attempt to continue operation..._`;
     }
     
     /**
-     * Get risk level based on spread
+     * Форматирование цены с учетом величины
      */
-    getRiskLevel(basisPoints) {
-        if (basisPoints >= 500) return '🟢 Low (High Spread)';
-        if (basisPoints >= 300) return '🟡 Medium';
-        if (basisPoints >= 150) return '🟠 Medium-High';
-        return '🔴 High (Low Spread)';
+    formatPrice(price) {
+        if (!price || price <= 0) return '$0.00';
+        
+        if (price < 0.000001) return `${price.toExponential(2)}`;
+        if (price < 0.001) return `${price.toFixed(8)}`;
+        if (price < 1) return `${price.toFixed(6)}`;
+        if (price < 1000) return `${price.toFixed(4)}`;
+        return `${price.toFixed(2)}`;
     }
     
     /**
-     * Get urgency emoji based on timing
+     * Получение эмодзи для рекомендации
      */
-    getUrgencyEmoji(urgency) {
-        const urgencyMap = {
-            'high': '🔥',
-            'medium': '⚡',
-            'low': '📊',
-            'none': ''
+    getRecommendationEmoji(recommendation) {
+        const emojiMap = {
+            'EXECUTE_IMMEDIATELY': '🚨',
+            'EXECUTE': '⚡',
+            'MONITOR': '👀',
+            'SKIP': '❌'
+        };
+        return emojiMap[recommendation] || '🤔';
+    }
+    
+    /**
+     * Генерация ссылок на Polygonscan
+     */
+    generatePolygonscanLinks(tokenSymbol) {
+        const tokenAddresses = {
+            'WMATIC': '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270',
+            'WETH': '0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619',
+            'WBTC': '0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6',
+            'USDC': '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+            'USDT': '0xc2132D05D31c914a87C6611C10748AEb04B58e8F'
         };
         
-        return urgencyMap[urgency] || '';
-    }
-    
-    /**
-     * Send startup notification
-     */
-    async sendStartupNotification() {
-        const message = `
-🚀 <b>Polygon Arbitrage Bot Started</b>
-
-✅ Bot has been successfully initialized and is now monitoring arbitrage opportunities.
-
-⚙️ <b>Configuration:</b>
-• Network: Polygon (MATIC)
-• Monitoring: Uniswap V3, SushiSwap, QuickSwap
-• Tokens: WETH, WBTC, USDC, USDT, LINK, AAVE, CRV, WMATIC
-
-🔍 <b>Check Interval:</b> ${process.env.CHECK_INTERVAL_MS ? process.env.CHECK_INTERVAL_MS / 1000 : 30}s
-💰 <b>Min Profit:</b> ${process.env.MIN_BASIS_POINTS_PER_TRADE || 50} bps
-
-⏰ <b>Started:</b> ${new Date().toLocaleString()}
-        `.trim();
+        const address = tokenAddresses[tokenSymbol];
+        if (!address) return '';
         
-        return await this.sendMessage(message);
+        return `\n🔗 [View ${tokenSymbol} on Polygonscan](https://polygonscan.com/token/${address})`;
     }
     
     /**
-     * Send shutdown notification
+     * Добавление сообщения в очередь
      */
-    async sendShutdownNotification(stats = {}) {
-        const message = `
-🛑 <b>Polygon Arbitrage Bot Stopped</b>
-
-Bot has been gracefully shut down.
-
-📊 <b>Session Statistics:</b>
-• Uptime: ${stats.uptime || 'Unknown'}
-• Opportunities Found: ${stats.opportunitiesFound || 0}
-• Total Checks: ${stats.totalChecks || 0}
-• Errors: ${stats.errors || 0}
-
-⏰ <b>Stopped:</b> ${new Date().toLocaleString()}
-        `.trim();
+    async queueMessage(text, options = {}) {
+        this.messageQueue.push({ text, options, timestamp: Date.now() });
         
-        return await this.sendMessage(message);
+        // Ограничиваем размер очереди
+        if (this.messageQueue.length > 50) {
+            this.messageQueue = this.messageQueue.slice(-50);
+        }
     }
     
     /**
-     * Test Telegram connection
+     * Обработка очереди сообщений
      */
-    async testConnection() {
-        const testMessage = `
-🧪 <b>Telegram Connection Test</b>
-
-✅ If you can see this message, Telegram notifications are working correctly!
-
-⏰ <b>Test Time:</b> ${new Date().toLocaleString()}
-        `.trim();
+    async processMessageQueue() {
+        if (this.isProcessingQueue || !this.isConfigured) return;
         
-        return await this.sendMessage(testMessage);
+        this.isProcessingQueue = true;
+        
+        while (this.messageQueue.length > 0) {
+            try {
+                const { text, options } = this.messageQueue.shift();
+                
+                await this.bot.sendMessage(this.chatId, text, {
+                    disable_web_page_preview: true,
+                    ...options
+                });
+                
+                this.lastMessageTime = Date.now();
+                
+                // Rate limiting
+                await this.sleep(this.rateLimitDelay);
+                
+            } catch (error) {
+                logger.logError('Failed to send Telegram message', error);
+                
+                // Если ошибка API, увеличиваем задержку
+                if (error.response?.statusCode === 429) {
+                    const retryAfter = error.response.body?.parameters?.retry_after || 60;
+                    logger.logWarning(`Rate limited, waiting ${retryAfter}s`);
+                    await this.sleep(retryAfter * 1000);
+                } else {
+                    // Для других ошибок просто ждем
+                    await this.sleep(5000);
+                }
+            }
+        }
+        
+        this.isProcessingQueue = false;
+        
+        // Запланировать следующую обработку
+        setTimeout(() => this.processMessageQueue(), 2000);
     }
     
     /**
-     * Get bot information
+     * Немедленная отправка всех сообщений в очереди
      */
-    async getBotInfo() {
-        if (!this.enabled || !this.bot) {
-            return null;
+    async flushMessageQueue() {
+        const maxRetries = 3;
+        let retries = 0;
+        
+        while (this.messageQueue.length > 0 && retries < maxRetries) {
+            await this.processMessageQueue();
+            
+            if (this.messageQueue.length > 0) {
+                retries++;
+                await this.sleep(1000);
+            }
+        }
+    }
+    
+    /**
+     * Тестовое сообщение
+     */
+    async sendTestMessage() {
+        if (!this.isConfigured) {
+            logger.logWarning('Telegram not configured - cannot send test message');
+            return false;
         }
         
         try {
-            return await this.bot.getMe();
+            const message = `🧪 *TEST MESSAGE*
+
+Telegram notifications are working correctly!
+
+⏰ *Time:* ${getCurrentTimestamp()}`;
+            
+            await this.queueMessage(message, { parse_mode: 'Markdown' });
+            return true;
         } catch (error) {
-            logger.logError('Failed to get Telegram bot info', error);
-            return null;
+            logger.logError('Failed to send test message', error);
+            return false;
         }
     }
     
     /**
-     * Send market update
+     * Простая задержка
      */
-    async sendMarketUpdate(marketData) {
-        const {
-            totalVolume,
-            topGainers,
-            topLosers,
-            marketTrend
-        } = marketData;
-        
-        const trendEmoji = marketTrend === 'up' ? '📈' : marketTrend === 'down' ? '📉' : '➡️';
-        
-        const message = `
-${trendEmoji} <b>Market Update</b>
-
-📊 <b>24h Volume:</b> ${formatPrice(totalVolume, 0)}
-📈 <b>Market Trend:</b> ${marketTrend?.toUpperCase() || 'NEUTRAL'}
-
-${topGainers?.length ? `
-🚀 <b>Top Gainers:</b>
-${topGainers.map(token => `• ${token.symbol}: +${token.change.toFixed(2)}%`).join('\n')}
-` : ''}
-
-${topLosers?.length ? `
-📉 <b>Top Losers:</b>
-${topLosers.map(token => `• ${token.symbol}: ${token.change.toFixed(2)}%`).join('\n')}
-` : ''}
-
-⏰ <b>Update:</b> ${new Date().toLocaleString()}
-        `.trim();
-        
-        return await this.sendMessage(message);
+    sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
     
     /**
-     * Send performance metrics
+     * Очистка очереди сообщений
      */
-    async sendPerformanceMetrics(metrics) {
-        const {
-            avgResponseTime,
-            successRate,
-            rpcFailures,
-            memoryUsage,
-            cpuUsage
-        } = metrics;
-        
-        const message = `
-⚡ <b>Performance Metrics</b>
-
-🚀 <b>Response Time:</b> ${avgResponseTime}ms avg
-✅ <b>Success Rate:</b> ${successRate}%
-🔄 <b>RPC Failures:</b> ${rpcFailures}
-💾 <b>Memory Usage:</b> ${memoryUsage}
-⚙️ <b>CPU Usage:</b> ${cpuUsage}%
-
-⏰ <b>Measured:</b> ${new Date().toLocaleString()}
-        `.trim();
-        
-        return await this.sendMessage(message);
+    clearQueue() {
+        this.messageQueue = [];
+        logger.logInfo('Telegram message queue cleared');
     }
     
     /**
-     * Send configuration update notification
+     * Получение статистики сообщений
      */
-    async sendConfigUpdate(changes) {
-        const message = `
-⚙️ <b>Configuration Updated</b>
-
-📝 <b>Changes:</b>
-${Object.entries(changes).map(([key, value]) => `• ${key}: ${value}`).join('\n')}
-
-⏰ <b>Updated:</b> ${new Date().toLocaleString()}
-        `.trim();
-        
-        return await this.sendMessage(message);
-    }
-    
-    /**
-     * Check if Telegram is properly configured
-     */
-    isConfigured() {
-        return this.enabled && this.bot && this.chatId;
-    }
-    
-    /**
-     * Get configuration status
-     */
-    getStatus() {
+    getMessageStats() {
         return {
-            enabled: this.enabled,
-            configured: this.isConfigured(),
-            chatId: this.chatId ? '***' + this.chatId.slice(-4) : null
+            queueLength: this.messageQueue.length,
+            isProcessing: this.isProcessingQueue,
+            lastMessageTime: this.lastMessageTime,
+            configured: this.isConfigured
         };
     }
 }
 
-// Create singleton instance
+// Создаем единственный экземпляр
 const telegramNotifier = new TelegramNotifier();
 
 module.exports = telegramNotifier;
