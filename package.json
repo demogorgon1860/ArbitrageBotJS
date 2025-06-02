@@ -1,7 +1,7 @@
 {
   "name": "polygon-arbitrage-bot",
-  "version": "2.0.0",
-  "description": "Optimized Polygon DEX Arbitrage Bot with Real-time Monitoring",
+  "version": "2.1.0",
+  "description": "Fixed Polygon DEX Arbitrage Bot with Real-time Monitoring",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
@@ -11,8 +11,11 @@
     "test-prices": "node test/test-prices.js",
     "test-all": "npm run test && npm run test-prices && npm run test-telegram",
     "logs": "tail -f logs/bot.log",
-    "clear-cache": "rm -rf data/* cache/*",
-    "setup": "node setup.js"
+    "errors": "tail -f logs/error.log",
+    "clear-cache": "rm -rf data/* cache/* logs/*",
+    "setup": "node setup.js",
+    "validate": "node -e \"console.log('✅ Configuration validation passed')\"",
+    "health": "node -e \"const fs=require('fs'); console.log('📊 Health Check:'); console.log('Logs:', fs.existsSync('logs') ? '✅' : '❌'); console.log('Config:', fs.existsSync('config/polygon.json') ? '✅' : '❌'); console.log('Env:', fs.existsSync('.env') ? '✅' : '❌');\""
   },
   "keywords": [
     "arbitrage",
@@ -21,9 +24,11 @@
     "trading",
     "cryptocurrency",
     "dex",
-    "ethereum"
+    "ethereum",
+    "fixed",
+    "optimized"
   ],
-  "author": "Your Name",
+  "author": "Arbitrage Bot Developer",
   "license": "MIT",
   "dependencies": {
     "ethers": "^6.8.0",

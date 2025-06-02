@@ -110,12 +110,14 @@
   "settings": {
     "inputAmountUSD": 1000,
     "minBasisPointsPerTrade": 50,
-    "checkIntervalMs": 15000,
-    "priceTimeoutMs": 8000,
-    "maxRetries": 2,
-    "retryDelayMs": 1000,
-    "maxConcurrentRequests": 3,
+    "checkIntervalMs": 30000,
+    "priceTimeoutMs": 15000,
+    "maxRetries": 3,
+    "retryDelayMs": 2000,
+    "maxConcurrentRequests": 2,
     "notificationCooldownMs": 300000,
+    "initializationTimeoutMs": 60000,
+    "recoveryAttempts": 3,
     "minLiquidityUSD": {
       "WBTC": 2000,
       "WETH": 1500,
@@ -158,6 +160,13 @@
       "minimum": 0.4,
       "good": 0.6,
       "excellent": 0.8
+    },
+    "performanceOptimizations": {
+      "batchSize": 2,
+      "maxConcurrentDEX": 2,
+      "cooldownBetweenBatches": 2000,
+      "maxProviders": 5,
+      "providerSwitchThreshold": 30
     }
   },
   "network": {
@@ -177,12 +186,30 @@
     "logLevel": "info",
     "statsReportingInterval": 300000,
     "healthCheckInterval": 60000,
-    "cacheCleanupInterval": 3600000
+    "cacheCleanupInterval": 3600000,
+    "errorThresholds": {
+      "maxErrorsPerHour": 50,
+      "maxConsecutiveErrors": 10,
+      "lowSuccessRateThreshold": 30
+    }
   },
   "fallbacks": {
     "defaultGasPrice": "25",
     "defaultSlippage": 0.5,
-    "defaultTimeout": 10000,
-    "maxFailuresBeforeSwitch": 3
+    "defaultTimeout": 15000,
+    "maxFailuresBeforeSwitch": 3,
+    "emergencyStopConditions": {
+      "maxErrorRate": 90,
+      "minProviders": 1,
+      "maxRestarts": 5
+    }
+  },
+  "optimizations": {
+    "enableBatching": true,
+    "enableCaching": true,
+    "cacheExpirationMs": 30000,
+    "enableProviderRotation": true,
+    "enableAdaptiveTimeouts": true,
+    "enableSmartRetries": true
   }
 }

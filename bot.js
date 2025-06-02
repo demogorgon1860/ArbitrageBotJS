@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * Optimized Polygon Arbitrage Bot
+ * Optimized Polygon Arbitrage Bot - ИСПРАВЛЕННАЯ ВЕРСИЯ
  * 
- * Features:
- * - Real-time DEX price monitoring
- * - Advanced profit calculations with realistic costs
- * - MEV protection analysis
- * - Liquidity validation
- * - Multiple RPC provider support with failover
- * - Intelligent notification system
- * - Comprehensive error handling
+ * Исправления:
+ * - Правильная последовательность инициализации
+ * - Устранены race conditions
+ * - Улучшена обработка ошибок
+ * - Добавлена защита от множественной инициализации
+ * - Улучшенное логирование
  * 
  * Usage: npm start
  */
@@ -42,6 +40,7 @@ class BotManager {
         this.maxRestarts = 5;
         this.restartCooldown = 30000; // 30 секунд
         this.lastRestart = 0;
+        this.initializationInProgress = false;
         
         this.setupErrorHandlers();
         this.setupGracefulShutdown();
@@ -51,6 +50,13 @@ class BotManager {
      * Запуск бота с проверками
      */
     async start() {
+        if (this.initializationInProgress) {
+            logger.logWarning('⚠️ Initialization already in progress');
+            return;
+        }
+        
+        this.initializationInProgress = true;
+        
         try {
             logger.logInfo('🚀 Starting Optimized Polygon Arbitrage Bot Manager...');
             
@@ -63,16 +69,24 @@ class BotManager {
             stats.lastRun = new Date().toISOString();
             await saveStats(stats);
             
-            // Создание и запуск бота
+            // Создание и инициализация бота
             this.bot = new ArbitrageBot();
+            
+            // Важно: сначала инициализируем, потом запускаем
+            logger.logInfo('⏳ Initializing bot components...');
+            await this.bot.init();
+            
+            logger.logInfo('🚀 Starting bot monitoring...');
             await this.bot.start();
             
             // Периодические отчеты
             this.startPeriodicReporting();
             
             logger.logSuccess('✅ Bot started successfully');
+            this.initializationInProgress = false;
             
         } catch (error) {
+            this.initializationInProgress = false;
             logger.logError('❌ Failed to start bot', error);
             await this.handleStartupError(error);
         }
@@ -96,7 +110,7 @@ class BotManager {
         // 4. Проверка зависимостей
         this.validateDependencies();
         
-        // 5. Тест Telegram
+        // 5. Тест Telegram (не блокирующий)
         await this.testTelegramConnection();
         
         logger.logSuccess('✅ All pre-start checks passed');
@@ -240,15 +254,18 @@ class BotManager {
     }
     
     /**
-     * Тест подключения Telegram
+     * Тест подключения Telegram (не блокирующий)
      */
     async testTelegramConnection() {
         if (telegramNotifier.getStatus().configured) {
             try {
-                // Отправляем тестовое сообщение при первом запуске
+                // Отправляем тестовое сообщение только при первом запуске
                 if (this.restartCount === 0) {
-                    await telegramNotifier.sendTestMessage();
-                    logger.logInfo('📱 Telegram connection tested');
+                    // Не ждем результат, чтобы не блокировать запуск
+                    telegramNotifier.sendTestMessage().catch(error => {
+                        logger.logWarning('Telegram test failed', error.message);
+                    });
+                    logger.logInfo('📱 Telegram connection test initiated');
                 }
             } catch (error) {
                 logger.logWarning('⚠️ Telegram test failed, but bot will continue', error.message);
@@ -264,7 +281,7 @@ class BotManager {
     startPeriodicReporting() {
         // Отчет каждые 30 минут
         setInterval(async () => {
-            if (this.bot && !this.isShuttingDown) {
+            if (this.bot && !this.isShuttingDown && this.bot.isRunning) {
                 try {
                     const stats = this.bot.getStats();
                     await telegramNotifier.sendPeriodicReport(stats);
@@ -277,7 +294,7 @@ class BotManager {
         
         // Краткая статистика каждые 5 минут в консоль
         setInterval(() => {
-            if (this.bot && !this.isShuttingDown) {
+            if (this.bot && !this.isShuttingDown && this.bot.isRunning && this.bot.isInitialized) {
                 this.bot.printStats();
             }
         }, 5 * 60 * 1000); // 5 минут
@@ -298,7 +315,11 @@ class BotManager {
         // Проверяем лимит рестартов
         if (this.restartCount >= this.maxRestarts) {
             logger.logError(`❌ Maximum restart attempts (${this.maxRestarts}) exceeded`);
-            await telegramNotifier.sendErrorAlert(error, 'Startup failure - max restarts exceeded');
+            try {
+                await telegramNotifier.sendErrorAlert(error, 'Startup failure - max restarts exceeded');
+            } catch (telegramError) {
+                logger.logError('Failed to send error notification', telegramError);
+            }
             process.exit(1);
         }
         
@@ -307,12 +328,10 @@ class BotManager {
         
         logger.logWarning(`⚠️ Startup failed (attempt ${this.restartCount}/${this.maxRestarts}), restarting in ${this.restartCooldown/1000}s...`);
         
-        // Отправляем уведомление об ошибке
-        try {
-            await telegramNotifier.sendErrorAlert(error, `Startup failure - restart attempt ${this.restartCount}`);
-        } catch (telegramError) {
+        // Отправляем уведомление об ошибке (не блокируем)
+        telegramNotifier.sendErrorAlert(error, `Startup failure - restart attempt ${this.restartCount}`).catch(telegramError => {
             logger.logError('Failed to send error notification', telegramError);
-        }
+        });
         
         // Ждем и перезапускаем
         setTimeout(() => {
@@ -328,21 +347,20 @@ class BotManager {
         process.on('unhandledRejection', async (reason, promise) => {
             logger.logError('🚨 Unhandled Promise Rejection', reason);
             
-            try {
-                await telegramNotifier.sendErrorAlert(
-                    new Error(reason), 
-                    'Unhandled Promise Rejection'
-                );
-            } catch (error) {
+            // Не блокируем на отправке уведомления
+            telegramNotifier.sendErrorAlert(
+                new Error(reason), 
+                'Unhandled Promise Rejection'
+            ).catch(error => {
                 logger.logError('Failed to send unhandled rejection notification', error);
-            }
+            });
             
-            // Не выходим сразу, даем боту возможность продолжить
+            // Даем боту возможность продолжить работу
         });
         
         // Uncaught Exceptions
         process.on('uncaughtException', async (error) => {
-            logger.logError('🚨 Uncaught Exception', error);
+            logger.logError('🚨 Uncaught Exception - CRITICAL', error);
             
             try {
                 await telegramNotifier.sendErrorAlert(error, 'Uncaught Exception - CRITICAL');
@@ -390,7 +408,7 @@ class BotManager {
         
         try {
             // Остановка бота
-            if (this.bot) {
+            if (this.bot && this.bot.isRunning) {
                 await this.bot.stop();
             }
             
@@ -398,11 +416,17 @@ class BotManager {
             const finalStats = this.bot ? this.bot.getStats() : {};
             await saveStats(finalStats);
             
-            // Финальное уведомление
-            await telegramNotifier.sendShutdownNotification(finalStats);
+            // Финальное уведомление (не блокируем)
+            telegramNotifier.sendShutdownNotification(finalStats).catch(error => {
+                logger.logError('Failed to send shutdown notification', error);
+            });
             
             logger.logSuccess('✅ Graceful shutdown completed');
-            process.exit(0);
+            
+            // Даем время на отправку уведомлений
+            setTimeout(() => {
+                process.exit(0);
+            }, 1000);
             
         } catch (error) {
             logger.logError('❌ Error during shutdown', error);
@@ -421,15 +445,16 @@ class BotManager {
             restartCount: this.restartCount,
             lastRestart: this.lastRestart,
             isShuttingDown: this.isShuttingDown,
-            botRunning: this.bot ? !this.bot.isRunning : false
+            botRunning: this.bot ? this.bot.isRunning : false,
+            botInitialized: this.bot ? this.bot.isInitialized : false
         };
     }
 }
 
 // Главная функция
 async function main() {
-    console.log('🤖 Optimized Polygon Arbitrage Bot v2.0');
-    console.log('═'.repeat(50));
+    console.log('🤖 Optimized Polygon Arbitrage Bot v2.1 - FIXED');
+    console.log('═'.repeat(54));
     
     const manager = new BotManager();
     await manager.start();

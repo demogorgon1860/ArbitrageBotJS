@@ -24,10 +24,12 @@ class ArbitrageBot {
         this.currentProviderIndex = 0;
         this.recentNotifications = new Map();
         this.isRunning = false;
+        this.isInitialized = false;
         this.startTime = Date.now();
         this.priceFetcher = null;
         this.timeCalculator = null;
         this.lastSuccessfulCheck = null;
+        this.initializationPromise = null;
         
         // Улучшенная статистика
         this.stats = {
@@ -48,33 +50,54 @@ class ArbitrageBot {
             bestOpportunity: null
         };
         
-        // Настройки производительности
+        // Оптимизированные настройки производительности
         this.performanceSettings = {
-            batchSize: 2, // Уменьшено для стабильности
-            maxConcurrentDEX: 2, // Максимум 2 DEX одновременно
-            priceTimeout: 8000, // 8 секунд на получение цены
-            retryAttempts: 2, // Меньше попыток, больше скорость
-            cooldownBetweenBatches: 1500 // 1.5 секунды между батчами
+            batchSize: 2,
+            maxConcurrentDEX: 2,
+            priceTimeout: 15000, // Увеличено до 15 секунд
+            retryAttempts: 3, // Увеличено количество попыток
+            cooldownBetweenBatches: 2000, // Увеличена пауза между батчами
+            initializationTimeout: 30000 // Таймаут инициализации
         };
-        
-        this.init();
     }
     
     async init() {
+        // Предотвращаем множественную инициализацию
+        if (this.initializationPromise) {
+            return this.initializationPromise;
+        }
+        
+        this.initializationPromise = this._performInitialization();
+        return this.initializationPromise;
+    }
+    
+    async _performInitialization() {
         try {
             logger.logInfo('🚀 Initializing Optimized Polygon Arbitrage Bot...');
             
-            await this.setupProviders();
+            // Этап 1: Настройка провайдеров с таймаутом
+            await Promise.race([
+                this.setupProviders(),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Provider setup timeout')), 
+                    this.performanceSettings.initializationTimeout)
+                )
+            ]);
             
-            // ИСПРАВЛЕНО: Инициализируем PriceFetcher СРАЗУ после setupProviders
-            if (this.providers.length > 0) {
-                this.priceFetcher = new PriceFetcher(this.getProvider());
-                logger.logInfo('✅ PriceFetcher initialized with provider');
-            } else {
-                throw new Error('No providers available for PriceFetcher');
+            if (this.providers.length === 0) {
+                throw new Error('No working RPC providers found');
             }
             
-            // Инициализация TimeCalculator с обработкой ошибок
+            // Этап 2: Инициализация PriceFetcher только после готовности провайдеров
+            try {
+                this.priceFetcher = new PriceFetcher(this.getProvider());
+                logger.logInfo('✅ PriceFetcher initialized successfully');
+            } catch (error) {
+                logger.logError('Failed to initialize PriceFetcher', error);
+                throw new Error(`PriceFetcher initialization failed: ${error.message}`);
+            }
+            
+            // Этап 3: Инициализация TimeCalculator с обработкой ошибок
             try {
                 this.timeCalculator = new ArbitrageTimeCalculator();
                 logger.logInfo('✅ TimeCalculator initialized');
@@ -83,87 +106,124 @@ class ArbitrageBot {
                 this.timeCalculator = null;
             }
             
-            await this.loadNotificationsCache();
-            await this.validateConfiguration();
-            await this.testConnections();
+            // Этап 4: Загрузка кэша и валидация
+            await Promise.all([
+                this.loadNotificationsCache(),
+                this.validateConfiguration(),
+                this.testConnections()
+            ]);
             
+            this.isInitialized = true;
             logger.logSuccess('✅ Optimized arbitrage bot initialized successfully');
+            
         } catch (error) {
             logger.logError('❌ Failed to initialize bot', error);
-            process.exit(1);
+            this.isInitialized = false;
+            throw error;
         }
     }
     
     async setupProviders() {
-        logger.logInfo('Setting up RPC providers...');
+        logger.logInfo('🌐 Setting up RPC providers...');
         
-        const rpcEndpoints = [];
+        const rpcEndpoints = this.collectRPCEndpoints();
+        logger.logInfo(`Found ${rpcEndpoints.length} potential RPC endpoints`);
         
-        // Собираем RPC endpoints из переменных окружения
-        for (let i = 1; i <= 10; i++) {
-            const rpc = process.env[`POLYGON_RPC_${i}`];
-            if (rpc && rpc !== 'undefined' && rpc.startsWith('http')) {
-                rpcEndpoints.push(rpc);
-            }
+        if (rpcEndpoints.length === 0) {
+            throw new Error('No RPC endpoints configured. Please check your .env file.');
         }
         
-        // Добавляем API ключи
-        if (process.env.ALCHEMY_API_KEY && process.env.ALCHEMY_API_KEY !== 'undefined') {
-            rpcEndpoints.push(`https://polygon-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`);
-        }
+        // Тестируем провайдеры параллельно с ограниченным concurrency
+        const providerPromises = rpcEndpoints.slice(0, 8).map(endpoint => 
+            this.testAndCreateProvider(endpoint)
+        );
         
-        if (process.env.INFURA_API_KEY && process.env.INFURA_API_KEY !== 'undefined') {
-            rpcEndpoints.push(`https://polygon.infura.io/v3/${process.env.INFURA_API_KEY}`);
-        }
+        const results = await Promise.allSettled(providerPromises);
         
-        // Публичные fallback endpoints
-        const publicEndpoints = [
-            "https://rpc.ankr.com/polygon",
-            "https://polygon-rpc.com", 
-            "https://rpc-mainnet.matic.network",
-            "https://matic-mainnet.chainstacklabs.com"
-        ];
-        rpcEndpoints.push(...publicEndpoints);
-        
-        // Убираем дубликаты
-        const uniqueEndpoints = [...new Set(rpcEndpoints)];
-        
-        // Тестируем каждый endpoint быстро
-        for (const endpoint of uniqueEndpoints) {
-            try {
-                const provider = new ethers.JsonRpcProvider(
-                    endpoint,
-                    137, // Polygon chainId
-                    {
-                        staticNetwork: true,
-                        batchMaxCount: 1
-                    }
-                );
-                
-                // Быстрый тест подключения
-                await Promise.race([
-                    provider.getBlockNumber(),
-                    new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Connection timeout')), 3000)
-                    )
-                ]);
-                
-                this.providers.push(provider);
-                logger.logInfo(`✅ Connected to RPC: ${endpoint.split('/')[2]}`);
+        // Собираем успешные провайдеры
+        for (const result of results) {
+            if (result.status === 'fulfilled' && result.value) {
+                this.providers.push(result.value);
                 
                 // Ограничиваем до 5 провайдеров для оптимальной производительности
                 if (this.providers.length >= 5) break;
-                
-            } catch (error) {
-                logger.logWarning(`❌ Failed to connect to RPC: ${endpoint.split('/')[2]}`);
             }
         }
         
         if (this.providers.length === 0) {
-            throw new Error('No working RPC providers found. Please check your .env configuration.');
+            throw new Error('No working RPC providers found. All endpoints failed connection tests.');
         }
         
-        logger.logSuccess(`Connected to ${this.providers.length} RPC providers`);
+        logger.logSuccess(`✅ Connected to ${this.providers.length} RPC providers`);
+    }
+    
+    collectRPCEndpoints() {
+        const endpoints = [];
+        
+        // Priority endpoints (API keys)
+        if (process.env.ALCHEMY_API_KEY && process.env.ALCHEMY_API_KEY !== 'undefined') {
+            endpoints.push(`https://polygon-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`);
+        }
+        
+        if (process.env.INFURA_API_KEY && process.env.INFURA_API_KEY !== 'undefined') {
+            endpoints.push(`https://polygon.infura.io/v3/${process.env.INFURA_API_KEY}`);
+        }
+        
+        // Custom RPC endpoints
+        for (let i = 1; i <= 10; i++) {
+            const rpc = process.env[`POLYGON_RPC_${i}`];
+            if (rpc && rpc !== 'undefined' && rpc.startsWith('http')) {
+                endpoints.push(rpc);
+            }
+        }
+        
+        // Public fallback endpoints
+        const publicEndpoints = [
+            "https://polygon-rpc.com",
+            "https://rpc.ankr.com/polygon",
+            "https://rpc-mainnet.matic.network",
+            "https://matic-mainnet.chainstacklabs.com",
+            "https://polygon-mainnet.infura.io"
+        ];
+        
+        endpoints.push(...publicEndpoints);
+        
+        // Убираем дубликаты
+        return [...new Set(endpoints)];
+    }
+    
+    async testAndCreateProvider(endpoint) {
+        try {
+            const provider = new ethers.JsonRpcProvider(
+                endpoint,
+                137, // Polygon chainId
+                {
+                    staticNetwork: true,
+                    batchMaxCount: 1
+                }
+            );
+            
+            // Быстрый тест подключения с таймаутом
+            const blockNumber = await Promise.race([
+                provider.getBlockNumber(),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Connection timeout')), 5000)
+                )
+            ]);
+            
+            // Дополнительная проверка сети
+            const network = await provider.getNetwork();
+            if (Number(network.chainId) !== 137) {
+                throw new Error(`Wrong network: expected 137, got ${network.chainId}`);
+            }
+            
+            logger.logInfo(`✅ Connected to RPC: ${endpoint.split('/')[2]} (block ${blockNumber})`);
+            return provider;
+            
+        } catch (error) {
+            logger.logWarning(`❌ Failed to connect to RPC: ${endpoint.split('/')[2]} - ${error.message}`);
+            return null;
+        }
     }
     
     getProvider() {
@@ -176,24 +236,33 @@ class ArbitrageBot {
     async switchProvider() {
         if (this.providers.length <= 1) {
             logger.logWarning('⚠️ Cannot switch provider - only one available');
-            return;
+            return false;
         }
         
+        const oldIndex = this.currentProviderIndex;
         this.currentProviderIndex = (this.currentProviderIndex + 1) % this.providers.length;
         this.stats.rpcFailovers++;
         
         const newProvider = this.getProvider();
         
-        // ИСПРАВЛЕНО: Проверяем что priceFetcher существует перед обновлением
-        if (this.priceFetcher) {
-            this.priceFetcher.updateProvider(newProvider);
+        // Безопасное обновление провайдера в PriceFetcher
+        if (this.priceFetcher && typeof this.priceFetcher.updateProvider === 'function') {
+            try {
+                this.priceFetcher.updateProvider(newProvider);
+                logger.logInfo(`🔄 Switched to RPC provider ${this.currentProviderIndex + 1}/${this.providers.length}`);
+                return true;
+            } catch (error) {
+                logger.logError('Failed to update PriceFetcher provider', error);
+                this.currentProviderIndex = oldIndex; // Откатываем изменения
+                return false;
+            }
         }
         
-        logger.logInfo(`🔄 Switched to RPC provider ${this.currentProviderIndex + 1}/${this.providers.length}`);
+        return false;
     }
     
     async validateConfiguration() {
-        logger.logInfo('Validating configuration...');
+        logger.logInfo('⚙️ Validating configuration...');
         
         // Проверяем основные токены
         const requiredTokens = ['WMATIC', 'USDC', 'WETH'];
@@ -211,11 +280,17 @@ class ArbitrageBot {
             }
         }
         
+        // Проверяем торговые пути
+        const pathsCount = Object.keys(config.tradingPaths || {}).length;
+        if (pathsCount === 0) {
+            throw new Error('No trading paths configured');
+        }
+        
         logger.logSuccess('✅ Configuration validated');
     }
     
     async testConnections() {
-        logger.logInfo('Testing connections...');
+        logger.logInfo('🔍 Testing connections...');
         
         // Тест Telegram
         const telegramStatus = telegramNotifier.getStatus();
@@ -225,7 +300,7 @@ class ArbitrageBot {
             logger.logWarning('⚠️ Telegram not configured - notifications disabled');
         }
         
-        // Тест RPC
+        // Тест RPC с улучшенной обработкой ошибок
         try {
             const provider = this.getProvider();
             const [blockNumber, network] = await Promise.all([
@@ -239,7 +314,7 @@ class ArbitrageBot {
             
             logger.logSuccess(`✅ RPC working - Block: ${blockNumber}, Chain: ${network.chainId}`);
         } catch (error) {
-            throw new Error(`RPC connection failed: ${error.message}`);
+            throw new Error(`RPC connection test failed: ${error.message}`);
         }
     }
     
@@ -259,6 +334,12 @@ class ArbitrageBot {
             return;
         }
         
+        // Ждем завершения инициализации
+        if (!this.isInitialized) {
+            logger.logInfo('⏳ Waiting for initialization to complete...');
+            await this.init();
+        }
+        
         this.isRunning = true;
         this.startTime = Date.now();
         
@@ -276,7 +357,10 @@ class ArbitrageBot {
         }
         
         // Запускаем основной цикл
-        this.runLoop();
+        this.runLoop().catch(error => {
+            logger.logError('Main loop crashed', error);
+            this.handleCriticalError(error);
+        });
         
         // Настройка graceful shutdown
         process.on('SIGINT', () => this.stop());
@@ -286,6 +370,12 @@ class ArbitrageBot {
     async runLoop() {
         while (this.isRunning) {
             try {
+                // Проверяем инициализацию перед каждой итерацией
+                if (!this.isInitialized || !this.priceFetcher) {
+                    logger.logWarning('⚠️ Bot not properly initialized, attempting re-initialization...');
+                    await this.init();
+                }
+                
                 await this.checkAllTokens();
                 await this.saveStats();
                 
@@ -297,13 +387,68 @@ class ArbitrageBot {
                 this.stats.errors++;
                 
                 // Попытка восстановления
-                await this.switchProvider();
-                await sleep(3000); // Короткая пауза перед повтором
+                const recovered = await this.attemptRecovery(error);
+                if (!recovered) {
+                    logger.logError('Failed to recover from error, stopping bot');
+                    break;
+                }
+                
+                // Короткая пауза перед повтором
+                await sleep(5000);
             }
         }
     }
     
+    async attemptRecovery(error) {
+        logger.logInfo('🔄 Attempting recovery...');
+        
+        try {
+            // 1. Попытка переключения провайдера
+            const providerSwitched = await this.switchProvider();
+            
+            // 2. Пересоздание PriceFetcher если необходимо
+            if (!this.priceFetcher || error.message.includes('PriceFetcher')) {
+                try {
+                    this.priceFetcher = new PriceFetcher(this.getProvider());
+                    logger.logInfo('✅ PriceFetcher recreated');
+                } catch (pfError) {
+                    logger.logError('Failed to recreate PriceFetcher', pfError);
+                    return false;
+                }
+            }
+            
+            // 3. Тест связи
+            const provider = this.getProvider();
+            await provider.getBlockNumber();
+            
+            logger.logSuccess('✅ Recovery successful');
+            return true;
+            
+        } catch (recoveryError) {
+            logger.logError('❌ Recovery failed', recoveryError);
+            return false;
+        }
+    }
+    
+    async handleCriticalError(error) {
+        logger.logError('🚨 Critical error occurred', error);
+        
+        try {
+            await telegramNotifier.sendErrorAlert(error, 'Critical bot error - stopping');
+        } catch (notificationError) {
+            logger.logError('Failed to send critical error notification', notificationError);
+        }
+        
+        await this.stop();
+    }
+    
     async checkAllTokens() {
+        // Проверяем готовность PriceFetcher
+        if (!this.priceFetcher) {
+            logger.logError('❌ PriceFetcher not available, skipping check');
+            return;
+        }
+        
         const tokens = Object.keys(config.tokens);
         const startTime = Date.now();
         
@@ -388,20 +533,21 @@ class ArbitrageBot {
             
             logger.logDebug(`🔍 Checking ${tokenSymbol} across ${dexNames.length} DEXes`);
             
-            // Получаем цены со всех DEX параллельно, но ограниченно
+            // Получаем цены со всех DEX с улучшенной обработкой ошибок
             const priceResults = await this.getOptimizedPrices(tokenSymbol, dexNames, inputAmountUSD);
             
             // Обновляем статистику получения цен
             this.stats.successfulPriceFetches += priceResults.filter(r => r.success).length;
             this.stats.failedPriceFetches += priceResults.filter(r => !r.success).length;
             
-            // Фильтруем валидные цены
+            // Фильтруем валидные цены с улучшенными критериями
             const validPrices = priceResults.filter(result => 
                 result.success && 
                 result.price > 0 && 
                 typeof result.price === 'number' && 
                 !isNaN(result.price) &&
-                result.liquidity && result.liquidity > 1000 // Минимальная ликвидность $1K
+                isFinite(result.price) &&
+                result.liquidity && result.liquidity > 500 // Снижен минимум ликвидности
             );
             
             if (validPrices.length < 2) {
@@ -466,7 +612,7 @@ class ArbitrageBot {
             // Добавляем данные о времени к возможности
             Object.assign(opportunity, {
                 timing: timingData,
-                adjustedProfit: timingData.adjustedProfit?.adjustedProfit || (potentialProfit * 0.7), // Консервативная оценка
+                adjustedProfit: timingData.adjustedProfit?.adjustedProfit || (potentialProfit * 0.7),
                 confidence: timingData.confidence || 0.6,
                 executionWindow: timingData.executionTime || 10000,
                 deadline: timingData.deadline || (Date.now() + 15000)
@@ -475,7 +621,7 @@ class ArbitrageBot {
             this.stats.viableOpportunities++;
             
             // Проверяем прибыльность после всех затрат
-            if (opportunity.adjustedProfit > 5) { // Минимум $5 чистой прибыли
+            if (opportunity.adjustedProfit > 3) { // Минимум $3 чистой прибыли
                 this.stats.profitableOpportunities++;
                 
                 logger.logSuccess(`💰 PROFITABLE ARBITRAGE: ${tokenSymbol}`, {
@@ -507,10 +653,10 @@ class ArbitrageBot {
     }
     
     /**
-     * Оптимизированное получение цен
+     * Оптимизированное получение цен с улучшенной обработкой ошибок
      */
     async getOptimizedPrices(tokenSymbol, dexNames, inputAmountUSD) {
-        // ИСПРАВЛЕНО: Проверяем что priceFetcher инициализирован
+        // Проверяем что priceFetcher инициализирован
         if (!this.priceFetcher) {
             logger.logError('❌ PriceFetcher not initialized');
             return dexNames.map(dexName => ({
@@ -624,7 +770,7 @@ class ArbitrageBot {
             deadline: Date.now() + 20000, // 20 секунд
             recommendation: {
                 action: adjustedProfit > 10 ? 'EXECUTE' : 'MONITOR',
-                reason: `Simple calculation: $${adjustedProfit.toFixed(2)} profit`,
+                reason: `Simple calculation: ${adjustedProfit.toFixed(2)} profit`,
                 priority: adjustedProfit > 15 ? 8 : 4
             }
         };
@@ -678,8 +824,8 @@ class ArbitrageBot {
             const successRate = (recentSuccess / totalAttempts) * 100;
             logger.logInfo(`📊 Price fetch success rate: ${successRate.toFixed(1)}%`);
             
-            if (successRate < 50) {
-                logger.logWarning('⚠️ Low success rate, consider switching RPC provider');
+            if (successRate < 30) {
+                logger.logWarning('⚠️ Low success rate, switching RPC provider');
                 await this.switchProvider();
             }
         }
@@ -738,7 +884,9 @@ class ArbitrageBot {
             successRate: this.stats.totalChecks > 0 ? 
                 ((this.stats.totalChecks - this.stats.errors) / this.stats.totalChecks * 100).toFixed(1) + '%' : 'N/A',
             profitabilityRate: this.stats.opportunitiesFound > 0 ?
-                ((this.stats.profitableOpportunities / this.stats.opportunitiesFound) * 100).toFixed(1) + '%' : 'N/A'
+                ((this.stats.profitableOpportunities / this.stats.opportunitiesFound) * 100).toFixed(1) + '%' : 'N/A',
+            priceSuccessRate: (this.stats.successfulPriceFetches + this.stats.failedPriceFetches) > 0 ?
+                ((this.stats.successfulPriceFetches / (this.stats.successfulPriceFetches + this.stats.failedPriceFetches)) * 100).toFixed(1) + '%' : 'N/A'
         };
     }
     
@@ -751,11 +899,13 @@ class ArbitrageBot {
         logger.logInfo(`   💎 Opportunities found: ${stats.opportunitiesFound}`);
         logger.logInfo(`   ✅ Viable opportunities: ${stats.viableOpportunities}`);
         logger.logInfo(`   💰 Profitable opportunities: ${stats.profitableOpportunities}`);
-        logger.logInfo(`   💵 Total potential profit: $${stats.totalPotentialProfit.toFixed(2)}`);
+        logger.logInfo(`   💵 Total potential profit: ${stats.totalPotentialProfit.toFixed(2)}`);
         logger.logInfo(`   📈 Average spread: ${stats.averageSpread.toFixed(1)} bps`);
         logger.logInfo(`   📡 Success rate: ${stats.successRate}`);
+        logger.logInfo(`   💱 Price success rate: ${stats.priceSuccessRate}`);
         logger.logInfo(`   💹 Profitability rate: ${stats.profitabilityRate}`);
         logger.logInfo(`   🌐 Active providers: ${stats.activeProviders}`);
+        logger.logInfo(`   🔄 RPC failovers: ${stats.rpcFailovers}`);
         
         if (stats.bestOpportunity) {
             logger.logInfo(`   🏆 Best opportunity: ${stats.bestOpportunity.token} (${stats.bestOpportunity.basisPoints} bps, ${stats.bestOpportunity.adjustedProfit.toFixed(2)})`);
@@ -787,8 +937,6 @@ class ArbitrageBot {
         } catch (error) {
             logger.logError('Error during shutdown', error);
         }
-        
-        process.exit(0);
     }
 }
 
@@ -796,7 +944,7 @@ class ArbitrageBot {
 if (require.main === module) {
     const bot = new ArbitrageBot();
     
-    // Запуск бота
+    // Запуск бота с обработкой ошибок
     bot.start().catch(error => {
         logger.logError('Failed to start bot', error);
         process.exit(1);
@@ -804,7 +952,9 @@ if (require.main === module) {
     
     // Периодическая отчетность
     setInterval(() => {
-        bot.printStats();
+        if (bot.isRunning && bot.isInitialized) {
+            bot.printStats();
+        }
     }, 300000); // Каждые 5 минут
 }
 
