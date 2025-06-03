@@ -73,43 +73,65 @@
       ["WETH", "USDC"],
       ["WETH", "USDT"],
       ["WETH", "WMATIC"],
-      ["WETH", "WBTC"]
+      ["WETH", "WBTC"],
+      ["WETH", "LINK"],
+      ["WETH", "AAVE"]
     ],
     "WBTC": [
       ["WBTC", "USDC"],
       ["WBTC", "WETH"],
-      ["WBTC", "USDT"]
+      ["WBTC", "USDT"],
+      ["WBTC", "WMATIC"]
     ],
     "USDC": [
       ["USDC", "USDT"],
       ["USDC", "WMATIC"],
       ["USDC", "WETH"],
-      ["USDC", "WBTC"]
+      ["USDC", "WBTC"],
+      ["USDC", "LINK"],
+      ["USDC", "AAVE"],
+      ["USDC", "CRV"]
     ],
     "USDT": [
       ["USDT", "USDC"],
       ["USDT", "WMATIC"],
-      ["USDT", "WETH"]
+      ["USDT", "WETH"],
+      ["USDT", "WBTC"],
+      ["USDT", "LINK"],
+      ["USDT", "AAVE"],
+      ["USDT", "CRV"]
     ],
     "LINK": [
       ["LINK", "USDC"],
+      ["LINK", "USDT"],
       ["LINK", "WETH"],
-      ["LINK", "WMATIC"]
+      ["LINK", "WMATIC"],
+      ["LINK", "WBTC"],
+      ["LINK", "AAVE"],
+      ["LINK", "CRV"]
     ],
     "AAVE": [
       ["AAVE", "USDC"],
+      ["AAVE", "USDT"],
       ["AAVE", "WETH"],
-      ["AAVE", "WMATIC"]
+      ["AAVE", "WMATIC"],
+      ["AAVE", "WBTC"],
+      ["AAVE", "LINK"],
+      ["AAVE", "CRV"]
     ],
     "CRV": [
       ["CRV", "USDC"],
+      ["CRV", "USDT"],
       ["CRV", "WETH"],
-      ["CRV", "WMATIC"]
+      ["CRV", "WMATIC"],
+      ["CRV", "WBTC"],
+      ["CRV", "LINK"],
+      ["CRV", "AAVE"]
     ]
   },
   "settings": {
     "inputAmountUSD": 1000,
-    "minBasisPointsPerTrade": 50,
+    "minBasisPointsPerTrade": 30,
     "checkIntervalMs": 30000,
     "priceTimeoutMs": 15000,
     "maxRetries": 3,
