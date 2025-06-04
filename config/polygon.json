@@ -41,6 +41,7 @@
       "symbol": "CRV"
     }
   },
+  
   "dexes": {
     "sushiswap": {
       "name": "SushiSwap",
@@ -63,6 +64,7 @@
       "fees": [500, 3000, 10000]
     }
   },
+  
   "tradingPaths": {
     "WMATIC": [
       ["WMATIC", "USDC"],
@@ -129,9 +131,10 @@
       ["CRV", "AAVE"]
     ]
   },
+  
   "settings": {
     "inputAmountUSD": 1000,
-    "minBasisPointsPerTrade": 30,
+    "minBasisPointsPerTrade": 20,
     "checkIntervalMs": 30000,
     "priceTimeoutMs": 15000,
     "maxRetries": 3,
@@ -140,16 +143,18 @@
     "notificationCooldownMs": 300000,
     "initializationTimeoutMs": 60000,
     "recoveryAttempts": 3,
+    
     "minLiquidityUSD": {
       "WBTC": 2000,
       "WETH": 1500,
       "WMATIC": 1000,
       "USDC": 500,
       "USDT": 500,
-      "LINK": 1000,
-      "AAVE": 1000,
-      "CRV": 1000
+      "LINK": 100,
+      "AAVE": 100,
+      "CRV": 100
     },
+    
     "slippageTolerance": {
       "WBTC": 0.8,
       "WETH": 0.5,
@@ -160,6 +165,7 @@
       "AAVE": 0.8,
       "CRV": 1.0
     },
+    
     "gasLimits": {
       "approve": 60000,
       "swap": {
@@ -173,16 +179,19 @@
         "CRV": 300000
       }
     },
+    
     "profitThresholds": {
       "minimum": 3,
       "good": 10,
       "excellent": 20
     },
+    
     "confidenceThresholds": {
       "minimum": 0.4,
       "good": 0.6,
       "excellent": 0.8
     },
+    
     "performanceOptimizations": {
       "batchSize": 2,
       "maxConcurrentDEX": 2,
@@ -191,6 +200,74 @@
       "providerSwitchThreshold": 30
     }
   },
+  
+  "optimizations": {
+    "enableBatching": true,
+    "enableCaching": true,
+    "cacheExpirationMs": 30000,
+    "enableProviderRotation": true,
+    "enableAdaptiveTimeouts": true,
+    "enableSmartRetries": true,
+    
+    "allowLowLiquidityTokens": true,
+    "enableMultiHop": true,
+    "enablePriceHistory": true,
+    "enableVolatilityAnalysis": true,
+    "enableAdaptiveThresholds": true,
+    "enableDynamicGasPricing": true,
+    "enableNetworkCongestionAnalysis": true,
+    "enableV3Support": true
+  },
+  
+  "strategies": {
+    "enableMultipleStrategies": true,
+    "defaultStrategy": "moderate",
+    
+    "conservative": {
+      "minBasisPoints": 50,
+      "minConfidence": 0.6,
+      "minLiquidityMultiplier": 1.0,
+      "maxSlippagePercent": 2.0,
+      "enableLowLiquidityTokens": false,
+      "enableMultiHop": false
+    },
+    
+    "moderate": {
+      "minBasisPoints": 35,
+      "minConfidence": 0.5,
+      "minLiquidityMultiplier": 0.8,
+      "maxSlippagePercent": 3.0,
+      "enableLowLiquidityTokens": true,
+      "enableMultiHop": true
+    },
+    
+    "aggressive": {
+      "minBasisPoints": 25,
+      "minConfidence": 0.4,
+      "minLiquidityMultiplier": 0.6,
+      "maxSlippagePercent": 5.0,
+      "enableLowLiquidityTokens": true,
+      "enableMultiHop": true
+    }
+  },
+  
+  "monitoring": {
+    "enableDetailedLogging": true,
+    "logLevel": "info",
+    "statsReportingInterval": 300000,
+    "healthCheckInterval": 60000,
+    "cacheCleanupInterval": 3600000,
+    "logAllRejections": true,
+    "enablePerformanceMetrics": true,
+    
+    "errorThresholds": {
+      "maxErrorsPerHour": 50,
+      "maxConsecutiveErrors": 10,
+      "lowSuccessRateThreshold": 30,
+      "maxRejectionRate": 95
+    }
+  },
+  
   "network": {
     "chainId": 137,
     "name": "Polygon",
@@ -202,36 +279,5 @@
     "blockExplorer": "https://polygonscan.com",
     "avgBlockTime": 2200,
     "confirmations": 1
-  },
-  "monitoring": {
-    "enableDetailedLogging": true,
-    "logLevel": "info",
-    "statsReportingInterval": 300000,
-    "healthCheckInterval": 60000,
-    "cacheCleanupInterval": 3600000,
-    "errorThresholds": {
-      "maxErrorsPerHour": 50,
-      "maxConsecutiveErrors": 10,
-      "lowSuccessRateThreshold": 30
-    }
-  },
-  "fallbacks": {
-    "defaultGasPrice": "25",
-    "defaultSlippage": 0.5,
-    "defaultTimeout": 15000,
-    "maxFailuresBeforeSwitch": 3,
-    "emergencyStopConditions": {
-      "maxErrorRate": 90,
-      "minProviders": 1,
-      "maxRestarts": 5
-    }
-  },
-  "optimizations": {
-    "enableBatching": true,
-    "enableCaching": true,
-    "cacheExpirationMs": 30000,
-    "enableProviderRotation": true,
-    "enableAdaptiveTimeouts": true,
-    "enableSmartRetries": true
   }
 }
