@@ -62,6 +62,21 @@
       "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
       "type": "v3",
       "fees": [500, 3000, 10000]
+    },
+     "quickswapv3": {
+      "name": "QuickSwap V3",
+      "router": "0xf5b509bB0909a69B1c207E495f687a596C168E12",
+      "quoter": "0xa15F0D7377B2A0C0c10262E4ABE1c5B5BBa7c1c4",
+      "factory": "0x411b0fAcC3489691f28ad58c47006AF5E3Ab3A28",
+      "type": "v3",
+      "fees": [500, 3000, 10000],
+      "priority": 2
+    },
+     "sushiswapv3": {
+      "name": "SushiSwap V3", 
+      "factory": "0x917933899c6a5F8E37F31E19f92CdBFF7e8FF0e2",
+      "type": "v3", 
+      "priority": 3
     }
   },
   

@@ -1,12 +1,21 @@
+/**
+ * Обновленный ArbitrageBot с улучшенным анализом ликвидности
+ * Новые возможности:
+ * - Точное отображение малых резервов
+ * - Отслеживание ликвидности по всей цепочке multi-hop
+ * - Детальная диагностика проблем с ликвидностью
+ * - Улучшенные уведомления с breakdown ликвидности
+ */
+
 const { ethers } = require('ethers');
 const fs = require('fs-extra');
 const path = require('path');
 require('dotenv').config();
 
 const config = require('../config/polygon.json');
-const logger = require('./logger');
+const logger = require('./logger'); // Используем обновленный logger
 const telegramNotifier = require('./telegram');
-const PriceFetcher = require('./priceFetcher'); // Используем обновленный PriceFetcher
+const EnhancedPriceFetcher = require('./priceFetcher'); // Используем новый PriceFetcher
 const ArbitrageTimeCalculator = require('./timeCalculator');
 const {
     calculateBasisPoints,
@@ -18,7 +27,7 @@ const {
     sleep
 } = require('./utils');
 
-class ArbitrageBot {
+class EnhancedArbitrageBot {
     constructor() {
         this.providers = [];
         this.currentProviderIndex = 0;
@@ -31,7 +40,7 @@ class ArbitrageBot {
         this.lastSuccessfulCheck = null;
         this.initializationPromise = null;
         
-        // Улучшенная статистика
+        // Расширенная статистика с ликвидностью
         this.stats = {
             totalChecks: 0,
             opportunitiesFound: 0,
@@ -49,6 +58,16 @@ class ArbitrageBot {
             averageSpread: 0,
             bestOpportunity: null,
             
+            // НОВАЯ статистика ликвидности
+            liquidityStats: {
+                totalLiquidityAnalyzed: 0,
+                averageLiquidity: 0,
+                lowLiquidityPairs: 0,
+                highLiquidityPairs: 0,
+                multiHopOpportunities: 0,
+                liquidityIssuesDetected: 0
+            },
+            
             // Детальная статистика отбрасывания
             rejectionStats: {
                 lowLiquidity: 0,
@@ -62,7 +81,7 @@ class ArbitrageBot {
             }
         };
         
-        // Оптимизированные настройки производительности
+        // Настройки производительности
         this.performanceSettings = {
             batchSize: config.settings?.performanceOptimizations?.batchSize || 2,
             maxConcurrentDEX: config.settings?.performanceOptimizations?.maxConcurrentDEX || 2,
@@ -86,7 +105,6 @@ class ArbitrageBot {
         const strategyConfig = strategies?.[defaultStrategy] || strategies?.conservative;
         
         if (!strategyConfig) {
-            // Fallback стратегия
             return {
                 name: 'fallback',
                 minBasisPoints: 30,
@@ -103,6 +121,7 @@ class ArbitrageBot {
         };
     }
     
+    // Методы инициализации (остаются прежними)
     async init() {
         if (this.initializationPromise) {
             return this.initializationPromise;
@@ -114,32 +133,25 @@ class ArbitrageBot {
     
     async _performInitialization() {
         try {
-            logger.logInfo('🚀 Initializing Enhanced Arbitrage Bot...');
+            logger.logInfo('🚀 Initializing Enhanced Arbitrage Bot with Liquidity Analysis...');
             logger.logInfo(`📊 Strategy: ${this.activeStrategy.name}`);
             
-            // Этап 1: Настройка провайдеров
-            await Promise.race([
-                this.setupProviders(),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Provider setup timeout')), 
-                    this.performanceSettings.initializationTimeout)
-                )
-            ]);
+            await this.setupProviders();
             
             if (this.providers.length === 0) {
                 throw new Error('No working RPC providers found');
             }
             
-            // Этап 2: Инициализация PriceFetcher
+            // Инициализация Enhanced PriceFetcher
             try {
-                this.priceFetcher = new PriceFetcher(this.getProvider());
-                logger.logInfo('✅ PriceFetcher initialized successfully');
+                this.priceFetcher = new EnhancedPriceFetcher(this.getProvider());
+                logger.logInfo('✅ Enhanced PriceFetcher initialized successfully');
             } catch (error) {
-                logger.logError('Failed to initialize PriceFetcher', error);
+                logger.logError('Failed to initialize Enhanced PriceFetcher', error);
                 throw new Error(`PriceFetcher initialization failed: ${error.message}`);
             }
             
-            // Этап 3: Инициализация TimeCalculator
+            // Инициализация TimeCalculator
             try {
                 this.timeCalculator = new ArbitrageTimeCalculator();
                 logger.logInfo('✅ TimeCalculator initialized');
@@ -148,7 +160,6 @@ class ArbitrageBot {
                 this.timeCalculator = null;
             }
             
-            // Этап 4: Загрузка данных и валидация
             await Promise.all([
                 this.loadNotificationsCache(),
                 this.validateConfiguration(),
@@ -156,7 +167,7 @@ class ArbitrageBot {
             ]);
             
             this.isInitialized = true;
-            logger.logSuccess('✅ Enhanced arbitrage bot initialized successfully');
+            logger.logSuccess('✅ Enhanced arbitrage bot with liquidity analysis initialized successfully');
             
         } catch (error) {
             logger.logError('❌ Failed to initialize enhanced bot', error);
@@ -165,6 +176,7 @@ class ArbitrageBot {
         }
     }
     
+    // Методы настройки провайдеров (остаются прежними)
     async setupProviders() {
         logger.logInfo('🌐 Setting up RPC providers...');
         
@@ -175,14 +187,12 @@ class ArbitrageBot {
             throw new Error('No RPC endpoints configured. Please check your .env file.');
         }
         
-        // Тестируем провайдеры параллельно
         const providerPromises = rpcEndpoints.slice(0, 8).map(endpoint => 
             this.testAndCreateProvider(endpoint)
         );
         
         const results = await Promise.allSettled(providerPromises);
         
-        // Собираем успешные провайдеры
         for (const result of results) {
             if (result.status === 'fulfilled' && result.value) {
                 this.providers.push(result.value);
@@ -200,7 +210,6 @@ class ArbitrageBot {
     collectRPCEndpoints() {
         const endpoints = [];
         
-        // Priority endpoints
         if (process.env.ALCHEMY_API_KEY && process.env.ALCHEMY_API_KEY !== 'undefined') {
             endpoints.push(`https://polygon-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`);
         }
@@ -209,7 +218,6 @@ class ArbitrageBot {
             endpoints.push(`https://polygon.infura.io/v3/${process.env.INFURA_API_KEY}`);
         }
         
-        // Custom RPC endpoints
         for (let i = 1; i <= 10; i++) {
             const rpc = process.env[`POLYGON_RPC_${i}`];
             if (rpc && rpc !== 'undefined' && rpc.startsWith('http')) {
@@ -217,7 +225,6 @@ class ArbitrageBot {
             }
         }
         
-        // Public fallback endpoints
         const publicEndpoints = [
             "https://polygon-rpc.com",
             "https://rpc.ankr.com/polygon",
@@ -231,14 +238,10 @@ class ArbitrageBot {
     
     async testAndCreateProvider(endpoint) {
         try {
-            const provider = new ethers.JsonRpcProvider(
-                endpoint,
-                137,
-                {
-                    staticNetwork: true,
-                    batchMaxCount: 1
-                }
-            );
+            const provider = new ethers.JsonRpcProvider(endpoint, 137, {
+                staticNetwork: true,
+                batchMaxCount: 1
+            });
             
             const blockNumber = await Promise.race([
                 provider.getBlockNumber(),
@@ -268,168 +271,7 @@ class ArbitrageBot {
         return this.providers[this.currentProviderIndex];
     }
     
-    async switchProvider() {
-        if (this.providers.length <= 1) {
-            logger.logWarning('⚠️ Cannot switch provider - only one available');
-            return false;
-        }
-        
-        const oldIndex = this.currentProviderIndex;
-        this.currentProviderIndex = (this.currentProviderIndex + 1) % this.providers.length;
-        this.stats.rpcFailovers++;
-        
-        const newProvider = this.getProvider();
-        
-        if (this.priceFetcher && typeof this.priceFetcher.updateProvider === 'function') {
-            try {
-                this.priceFetcher.updateProvider(newProvider);
-                logger.logInfo(`🔄 Switched to RPC provider ${this.currentProviderIndex + 1}/${this.providers.length}`);
-                return true;
-            } catch (error) {
-                logger.logError('Failed to update PriceFetcher provider', error);
-                this.currentProviderIndex = oldIndex;
-                return false;
-            }
-        }
-        
-        return false;
-    }
-    
-    async validateConfiguration() {
-        logger.logInfo('⚙️ Validating configuration...');
-        
-        // Проверяем основные токены
-        const requiredTokens = ['WMATIC', 'USDC', 'WETH'];
-        for (const tokenSymbol of requiredTokens) {
-            if (!config.tokens[tokenSymbol]) {
-                throw new Error(`Missing required token: ${tokenSymbol}`);
-            }
-        }
-        
-        // Проверяем DEX
-        const requiredDEXes = ['sushiswap', 'quickswap'];
-        for (const dexName of requiredDEXes) {
-            if (!config.dexes[dexName]) {
-                throw new Error(`Missing required DEX: ${dexName}`);
-            }
-        }
-        
-        // Проверяем торговые пути
-        const pathsCount = Object.keys(config.tradingPaths || {}).length;
-        if (pathsCount === 0) {
-            throw new Error('No trading paths configured');
-        }
-        
-        logger.logSuccess('✅ Configuration validated');
-    }
-    
-    async testConnections() {
-        logger.logInfo('🔍 Testing connections...');
-        
-        // Тест Telegram
-        const telegramStatus = telegramNotifier.getStatus();
-        if (telegramStatus.configured) {
-            logger.logSuccess('✅ Telegram connection working');
-        } else {
-            logger.logWarning('⚠️ Telegram not configured - notifications disabled');
-        }
-        
-        // Тест RPC
-        try {
-            const provider = this.getProvider();
-            const [blockNumber, network] = await Promise.all([
-                provider.getBlockNumber(),
-                provider.getNetwork()
-            ]);
-            
-            if (Number(network.chainId) !== 137) {
-                throw new Error(`Wrong network: expected 137, got ${network.chainId}`);
-            }
-            
-            logger.logSuccess(`✅ RPC working - Block: ${blockNumber}, Chain: ${network.chainId}`);
-        } catch (error) {
-            throw new Error(`RPC connection test failed: ${error.message}`);
-        }
-    }
-    
-    async loadNotificationsCache() {
-        try {
-            this.recentNotifications = await loadNotificationsCache();
-            logger.logInfo(`📋 Loaded ${this.recentNotifications.size} cached notifications`);
-        } catch (error) {
-            logger.logWarning('⚠️ Failed to load notifications cache, starting fresh');
-            this.recentNotifications = new Map();
-        }
-    }
-    
-    async start() {
-        if (this.isRunning) {
-            logger.logWarning('⚠️ Bot is already running');
-            return;
-        }
-        
-        if (!this.isInitialized) {
-            logger.logInfo('⏳ Waiting for initialization to complete...');
-            await this.init();
-        }
-        
-        this.isRunning = true;
-        this.startTime = Date.now();
-        
-        logger.logSuccess('🚀 Starting enhanced arbitrage monitoring...');
-        logger.logInfo(`📊 Checking ${Object.keys(config.tokens).length} tokens across ${Object.keys(config.dexes).length} DEXes`);
-        logger.logInfo(`⏱️ Check interval: ${config.settings.checkIntervalMs / 1000}s`);
-        logger.logInfo(`💰 Input amount: $${config.settings.inputAmountUSD}`);
-        logger.logInfo(`📈 Strategy: ${this.activeStrategy.name} (${this.activeStrategy.minBasisPoints} bps min)`);
-        logger.logInfo(`🔧 Low liquidity tokens: ${this.activeStrategy.enableLowLiquidityTokens ? 'Enabled' : 'Disabled'}`);
-        logger.logInfo(`🔄 Multi-hop: ${this.activeStrategy.enableMultiHop ? 'Enabled' : 'Disabled'}`);
-        
-        // Отправляем уведомление о запуске
-        try {
-            await telegramNotifier.sendStartupNotification();
-        } catch (error) {
-            logger.logWarning('Failed to send startup notification', error.message);
-        }
-        
-        // Запускаем основной цикл
-        this.runLoop().catch(error => {
-            logger.logError('Main loop crashed', error);
-            this.handleCriticalError(error);
-        });
-        
-        // Настройка graceful shutdown
-        process.on('SIGINT', () => this.stop());
-        process.on('SIGTERM', () => this.stop());
-    }
-    
-    async runLoop() {
-        while (this.isRunning) {
-            try {
-                if (!this.isInitialized || !this.priceFetcher) {
-                    logger.logWarning('⚠️ Bot not properly initialized, attempting re-initialization...');
-                    await this.init();
-                }
-                
-                await this.checkAllTokens();
-                await this.saveStats();
-                
-                // Ждем до следующей проверки
-                await sleep(config.settings.checkIntervalMs);
-                
-            } catch (error) {
-                logger.logError('❌ Error in main loop', error);
-                this.stats.errors++;
-                
-                const recovered = await this.attemptRecovery(error);
-                if (!recovered) {
-                    logger.logError('Failed to recover from error, stopping bot');
-                    break;
-                }
-                
-                await sleep(5000);
-            }
-        }
-    }
+    // Основные методы проверки арбитража с улучшенным анализом ликвидности
     
     async checkAllTokens() {
         if (!this.priceFetcher) {
@@ -448,6 +290,7 @@ class ArbitrageBot {
         
         const opportunities = [];
         const rejectedOpportunities = [];
+        const liquidityResults = [];
         
         // Обработка токенов батчами
         for (let i = 0; i < tokens.length; i += this.performanceSettings.batchSize) {
@@ -455,22 +298,41 @@ class ArbitrageBot {
             
             const batchPromises = batch.map(async (token) => {
                 try {
-                    const result = await this.findArbitrageOpportunity(token);
+                    const result = await this.findArbitrageOpportunityWithLiquidity(token);
                     if (result && result.success) {
                         opportunities.push(result.opportunity);
                         this.stats.opportunitiesFound++;
+                        
+                        // Обновляем статистику ликвидности
+                        this.updateLiquidityStats(result.opportunity);
                         
                         if (!this.stats.bestOpportunity || result.opportunity.basisPoints > this.stats.bestOpportunity.basisPoints) {
                             this.stats.bestOpportunity = {
                                 token: result.opportunity.token,
                                 basisPoints: result.opportunity.basisPoints,
                                 adjustedProfit: result.opportunity.adjustedProfit,
-                                timestamp: result.opportunity.timestamp
+                                timestamp: result.opportunity.timestamp,
+                                liquidityDetails: {
+                                    buyLiquidity: result.opportunity.buyLiquidity,
+                                    sellLiquidity: result.opportunity.sellLiquidity,
+                                    effectiveLiquidity: Math.min(result.opportunity.buyLiquidity, result.opportunity.sellLiquidity)
+                                }
                             };
                         }
                     } else if (result) {
                         rejectedOpportunities.push(result);
                         this.updateRejectionStats(result.rejectionReason);
+                        
+                        // Сохраняем данные о ликвидности даже для отклоненных возможностей
+                        if (result.liquidityData) {
+                            liquidityResults.push({
+                                token,
+                                dex: result.dex || 'unknown',
+                                liquidity: result.liquidityData.liquidity || 0,
+                                success: false,
+                                rejectionReason: result.rejectionReason
+                            });
+                        }
                     }
                     return result;
                 } catch (error) {
@@ -498,8 +360,10 @@ class ArbitrageBot {
             
             logger.logSuccess(`✅ Found ${opportunities.length} viable opportunities in ${checkDuration}ms`);
             
+            // Логируем детальную информацию о ликвидности для лучших возможностей
             for (const opportunity of opportunities.slice(0, 3)) {
-                await this.processOpportunity(opportunity);
+                logger.logArbitrageWithLiquidity(opportunity);
+                await this.processOpportunityWithLiquidity(opportunity);
             }
             
             this.updateProfitStatistics(opportunities);
@@ -507,34 +371,38 @@ class ArbitrageBot {
         } else {
             logger.logInfo(`🔍 No viable opportunities found in ${checkDuration}ms`);
             
-            // Детальная диагностика отклонений
-            this.logRejectionSummary(rejectedOpportunities);
-            await this.diagnosticCheck();
+            // НОВАЯ детальная диагностика отклонений с анализом ликвидности
+            this.logRejectionSummaryWithLiquidity(rejectedOpportunities);
+            await this.diagnosticLiquidityCheck(liquidityResults);
         }
         
         this.lastSuccessfulCheck = Date.now();
     }
     
-    async findArbitrageOpportunity(tokenSymbol) {
+    /**
+     * НОВЫЙ: Поиск арбитража с детальным анализом ликвидности
+     */
+    async findArbitrageOpportunityWithLiquidity(tokenSymbol) {
         try {
             const inputAmountUSD = config.settings.inputAmountUSD;
             const dexNames = Object.keys(config.dexes);
             
-            logger.logDebug(`🔍 Checking ${tokenSymbol} across ${dexNames.length} DEXes`);
+            logger.logDebug(`🔍 Checking ${tokenSymbol} across ${dexNames.length} DEXes with liquidity analysis`);
             
-            // Получаем цены со всех DEX
-            const priceResults = await this.getOptimizedPrices(tokenSymbol, dexNames, inputAmountUSD);
+            // Получаем цены со всех DEX с детальной информацией о ликвидности
+            const priceResults = await this.getOptimizedPricesWithLiquidity(tokenSymbol, dexNames, inputAmountUSD);
             
             this.stats.successfulPriceFetches += priceResults.filter(r => r.success).length;
             this.stats.failedPriceFetches += priceResults.filter(r => !r.success).length;
             
-            // Фильтруем валидные цены с улучшенными критериями
+            // Фильтруем валидные цены с учетом ликвидности
             const validPrices = priceResults.filter(result => 
                 result.success && 
                 result.price > 0 && 
                 typeof result.price === 'number' && 
                 !isNaN(result.price) &&
-                isFinite(result.price)
+                isFinite(result.price) &&
+                result.liquidity !== undefined
             );
             
             if (validPrices.length < 2) {
@@ -547,15 +415,31 @@ class ArbitrageBot {
                 };
             }
             
+            // НОВЫЙ: Логируем сравнение ликвидности между DEX
+            if (typeof logger.logLiquidityComparison === 'function') {
+                logger.logLiquidityComparison(tokenSymbol, validPrices);
+            }
+            
             // Применяем фильтр ликвидности на основе стратегии
-            const liquidPrices = this.filterByLiquidity(validPrices, tokenSymbol);
+            const liquidPrices = this.filterByLiquidityWithDetails(validPrices, tokenSymbol);
             
             if (liquidPrices.length < 2) {
+                // Детальная диагностика проблем с ликвидностью
+                const liquidityIssues = this.diagnoseLiquidityIssues(validPrices, tokenSymbol);
+                if (typeof logger.logLiquidityIssues === 'function') {
+                    logger.logLiquidityIssues(tokenSymbol, liquidityIssues);
+                }
+                
                 return {
                     success: false,
                     rejectionReason: 'low_liquidity',
                     details: `Only ${liquidPrices.length} prices passed liquidity filter`,
-                    token: tokenSymbol
+                    token: tokenSymbol,
+                    liquidityData: {
+                        validPrices: validPrices.length,
+                        liquidPrices: liquidPrices.length,
+                        issues: liquidityIssues
+                    }
                 };
             }
             
@@ -592,7 +476,7 @@ class ArbitrageBot {
             const percentage = basisPoints / 100;
             const potentialProfit = inputAmountUSD * (percentage / 100);
             
-            // Создаем базовую возможность
+            // Создаем базовую возможность с детальной информацией о ликвидности
             const opportunity = {
                 token: tokenSymbol,
                 buyDex: buyPrice.dex,
@@ -609,6 +493,13 @@ class ArbitrageBot {
                 sellMethod: sellPrice.method,
                 buyLiquidity: buyPrice.liquidity,
                 sellLiquidity: sellPrice.liquidity,
+                
+                // НОВЫЕ поля для детального анализа ликвидности
+                buyLiquidityBreakdown: buyPrice.liquidityBreakdown,
+                sellLiquidityBreakdown: sellPrice.liquidityBreakdown,
+                effectiveLiquidity: Math.min(buyPrice.liquidity, sellPrice.liquidity),
+                liquidityRatio: Math.max(buyPrice.liquidity, sellPrice.liquidity) / Math.min(buyPrice.liquidity, sellPrice.liquidity),
+                
                 estimatedSlippage: {
                     buy: buyPrice.estimatedSlippage || 0.3,
                     sell: sellPrice.estimatedSlippage || 0.3
@@ -651,7 +542,10 @@ class ArbitrageBot {
                     confidence: `${(opportunity.confidence * 100).toFixed(1)}%`,
                     buyDex: buyPrice.dex,
                     sellDex: sellPrice.dex,
-                    strategy: this.activeStrategy.name
+                    strategy: this.activeStrategy.name,
+                    buyLiquidity: `${(opportunity.buyLiquidity/1000).toFixed(1)}K`,
+                    sellLiquidity: `${(opportunity.sellLiquidity/1000).toFixed(1)}K`,
+                    effectiveLiquidity: `${(opportunity.effectiveLiquidity/1000).toFixed(1)}K`
                 });
                 
                 return {
@@ -686,49 +580,15 @@ class ArbitrageBot {
     }
     
     /**
-     * Фильтрация по ликвидности на основе стратегии
+     * НОВЫЙ: Получение цен с детальной информацией о ликвидности
      */
-    filterByLiquidity(validPrices, tokenSymbol) {
-        if (this.activeStrategy.enableLowLiquidityTokens) {
-            // Если стратегия разрешает низкую ликвидность, используем очень низкий порог
-            return validPrices.filter(result => 
-                result.liquidity && result.liquidity > 100 // Минимум $100
-            );
-        }
-        
-        // Стандартная фильтрация на основе конфига
-        const minLiquidity = this.getMinLiquidityThreshold(tokenSymbol);
-        return validPrices.filter(result => 
-            result.liquidity && result.liquidity >= minLiquidity
-        );
-    }
-    
-    /**
-     * Получение минимального порога ликвидности
-     */
-    getMinLiquidityThreshold(tokenSymbol) {
-        const dynamicThresholds = config.settings?.minLiquidityUSD || {};
-        
-        if (dynamicThresholds[tokenSymbol]) {
-            return dynamicThresholds[tokenSymbol];
-        }
-        
-        // Пороги по умолчанию
-        const stablecoins = ['USDC', 'USDT'];
-        if (stablecoins.includes(tokenSymbol)) return 500;
-        if (['WBTC', 'WETH'].includes(tokenSymbol)) return 2000;
-        return 1000;
-    }
-    
-    /**
-     * Получение оптимизированных цен
-     */
-    async getOptimizedPrices(tokenSymbol, dexNames, inputAmountUSD) {
-        // Проверяем что priceFetcher инициализирован
+    async getOptimizedPricesWithLiquidity(tokenSymbol, dexNames, inputAmountUSD) {
         if (!this.priceFetcher) {
             logger.logError('❌ PriceFetcher not initialized');
             return dexNames.map(dexName => ({
                 price: 0,
+                liquidity: 0,
+                liquidityBreakdown: { totalLiquidity: 0, method: 'error', steps: [] },
                 path: null,
                 method: null,
                 dex: dexName,
@@ -745,6 +605,8 @@ class ArbitrageBot {
                 )
             ]).catch(error => ({
                 price: 0,
+                liquidity: 0,
+                liquidityBreakdown: { totalLiquidity: 0, method: 'error', steps: [] },
                 path: null,
                 method: null,
                 dex: dexName,
@@ -758,10 +620,19 @@ class ArbitrageBot {
             
             return results.map((result, index) => {
                 if (result.status === 'fulfilled') {
-                    return result.value;
+                    const priceData = result.value;
+                    
+                    // Логируем детальную информацию о ликвидности
+                    if (priceData.success && typeof logger.logLiquidityDetails === 'function') {
+                        logger.logLiquidityDetails(tokenSymbol, dexNames[index], priceData);
+                    }
+                    
+                    return priceData;
                 } else {
                     return {
                         price: 0,
+                        liquidity: 0,
+                        liquidityBreakdown: { totalLiquidity: 0, method: 'promise_error', steps: [] },
                         path: null,
                         method: null,
                         dex: dexNames[index],
@@ -772,9 +643,11 @@ class ArbitrageBot {
             });
             
         } catch (error) {
-            logger.logError('Failed to get optimized prices', error);
+            logger.logError('Failed to get optimized prices with liquidity', error);
             return dexNames.map(dexName => ({
                 price: 0,
+                liquidity: 0,
+                liquidityBreakdown: { totalLiquidity: 0, method: 'catch_error', steps: [] },
                 path: null,
                 method: null,
                 dex: dexName,
@@ -785,73 +658,131 @@ class ArbitrageBot {
     }
     
     /**
-     * Расчет времени и жизнеспособности
+     * НОВЫЙ: Фильтрация по ликвидности с детальным анализом
      */
-    async calculateTiming(opportunity) {
-        try {
-            if (this.timeCalculator && typeof this.timeCalculator.calculateArbitrageTimings === 'function') {
-                return await this.timeCalculator.calculateArbitrageTimings(opportunity, this.getProvider());
-            } else {
-                // Упрощенный расчет времени
-                return this.calculateSimpleTiming(opportunity);
+    filterByLiquidityWithDetails(validPrices, tokenSymbol) {
+        if (this.activeStrategy.enableLowLiquidityTokens) {
+            // Если стратегия разрешает низкую ликвидность, используем очень низкий порог
+            return validPrices.filter(result => {
+                const hasMinimalLiquidity = result.liquidity && result.liquidity > 10; // Минимум $10
+                
+                if (!hasMinimalLiquidity) {
+                    logger.logDebug(`🔍 ${tokenSymbol} on ${result.dex}: Below minimal liquidity threshold (${result.liquidity?.toFixed(2) || 0})`);
+                }
+                
+                return hasMinimalLiquidity;
+            });
+        }
+        
+        // Стандартная фильтрация на основе конфига
+        const minLiquidity = this.getMinLiquidityThreshold(tokenSymbol);
+        return validPrices.filter(result => {
+            const meetsThreshold = result.liquidity && result.liquidity >= minLiquidity;
+            
+            if (!meetsThreshold) {
+                logger.logDebug(`🔍 ${tokenSymbol} on ${result.dex}: Below liquidity threshold (${result.liquidity?.toFixed(2) || 0} < ${minLiquidity})`);
             }
-        } catch (error) {
-            logger.logError('Timing calculation failed, using fallback', error);
-            return this.calculateSimpleTiming(opportunity);
+            
+            return meetsThreshold;
+        });
+    }
+    
+    /**
+     * НОВЫЙ: Диагностика проблем с ликвидностью
+     */
+    diagnoseLiquidityIssues(validPrices, tokenSymbol) {
+        const issues = [];
+        
+        validPrices.forEach(priceData => {
+            const liquidity = priceData.liquidity || 0;
+            const dex = priceData.dex;
+            
+            if (liquidity === 0) {
+                issues.push({
+                    dex,
+                    issue: 'Zero liquidity detected',
+                    details: `No reserves found in ${dex} pools`,
+                    suggestion: 'Check if trading pair exists on this DEX'
+                });
+            } else if (liquidity < 10) {
+                issues.push({
+                    dex,
+                    issue: `Extremely low liquidity (${liquidity.toFixed(2)})`,
+                    details: 'May cause failed transactions or extreme slippage',
+                    suggestion: 'Avoid trading on this DEX or use much smaller amounts'
+                });
+            } else if (liquidity < 100) {
+                issues.push({
+                    dex,
+                    issue: `Very low liquidity (${liquidity.toFixed(2)})`,
+                    details: 'High slippage expected (>10%)',
+                    suggestion: 'Consider smaller trade sizes or alternative DEXes'
+                });
+            } else if (liquidity < 1000) {
+                issues.push({
+                    dex,
+                    issue: `Low liquidity (${liquidity.toFixed(0)})`,
+                    details: 'Moderate to high slippage expected (2-10%)',
+                    suggestion: 'Monitor slippage carefully'
+                });
+            }
+            
+            // Анализ multi-hop проблем
+            if (priceData.liquidityBreakdown?.method === 'multi_hop_aggregation') {
+                const bottleneck = priceData.liquidityBreakdown.bottleneck;
+                if (bottleneck && bottleneck.liquidity < 500) {
+                    issues.push({
+                        dex,
+                        issue: `Multi-hop bottleneck at ${bottleneck.step}`,
+                        details: `Limiting liquidity: ${bottleneck.liquidity.toFixed(0)}`,
+                        suggestion: 'Consider direct trading pairs instead of multi-hop'
+                    });
+                }
+            }
+        });
+        
+        return issues;
+    }
+    
+    /**
+     * НОВЫЙ: Обновление статистики ликвидности
+     */
+    updateLiquidityStats(opportunity) {
+        const liquidityStats = this.stats.liquidityStats;
+        
+        liquidityStats.totalLiquidityAnalyzed++;
+        
+        const buyLiquidity = opportunity.buyLiquidity || 0;
+        const sellLiquidity = opportunity.sellLiquidity || 0;
+        const effectiveLiquidity = opportunity.effectiveLiquidity || 0;
+        
+        // Обновляем среднюю ликвидность
+        const currentAvg = liquidityStats.averageLiquidity;
+        const totalAnalyzed = liquidityStats.totalLiquidityAnalyzed;
+        liquidityStats.averageLiquidity = ((currentAvg * (totalAnalyzed - 1)) + effectiveLiquidity) / totalAnalyzed;
+        
+        // Категоризируем ликвидность
+        if (effectiveLiquidity < 1000) {
+            liquidityStats.lowLiquidityPairs++;
+        } else if (effectiveLiquidity > 10000) {
+            liquidityStats.highLiquidityPairs++;
+        }
+        
+        // Отслеживаем multi-hop возможности
+        if (opportunity.buyMethod?.includes('multihop') || opportunity.sellMethod?.includes('multihop')) {
+            liquidityStats.multiHopOpportunities++;
+        }
+        
+        // Отслеживаем проблемы с ликвидностью
+        if (opportunity.liquidityRatio > 5) { // Большая разница в ликвидности между сторонами
+            liquidityStats.liquidityIssuesDetected++;
         }
     }
     
     /**
-     * Упрощенный расчет времени
+     * НОВЫЙ: Обработка возможности с учетом ликвидности
      */
-    calculateSimpleTiming(opportunity) {
-        const { basisPoints, potentialProfit, buyLiquidity, sellLiquidity } = opportunity;
-        
-        // Простая оценка затрат
-        const gasEstimate = 2.5; // $2.5 на газ
-        const dexFees = opportunity.inputAmount * 0.006; // 0.6% комиссии DEX
-        const slippageCost = opportunity.inputAmount * 0.003; // 0.3% slippage
-        const totalCosts = gasEstimate + dexFees + slippageCost;
-        
-        const adjustedProfit = Math.max(0, potentialProfit - totalCosts);
-        
-        // Простая оценка confidence на основе стратегии
-        let confidence = 0.5;
-        if (basisPoints > 150) confidence += 0.2;
-        if (basisPoints > 100) confidence += 0.1;
-        if (Math.min(buyLiquidity, sellLiquidity) > 5000) confidence += 0.1;
-        if (opportunity.buyPath?.length === 2 && opportunity.sellPath?.length === 2) confidence += 0.1;
-        
-        confidence = Math.min(0.9, confidence);
-        
-        // Проверяем соответствие стратегии
-        const strategyMinConfidence = this.activeStrategy.minConfidence || 0.4;
-        const isViable = adjustedProfit > 3 && confidence > strategyMinConfidence;
-        
-        return {
-            isViable,
-            confidence,
-            adjustedProfit: {
-                adjustedProfit,
-                totalCosts,
-                gasInUSD: gasEstimate,
-                dexFees,
-                slippageCost
-            },
-            executionTime: 8000, // 8 секунд
-            deadline: Date.now() + 20000, // 20 секунд
-            recommendation: {
-                action: adjustedProfit > 10 ? 'EXECUTE' : 'MONITOR',
-                reason: `Strategy calculation: ${adjustedProfit.toFixed(2)} profit`,
-                priority: Math.min(8, Math.floor(adjustedProfit / 2))
-            }
-        };
-    }
-    
-    /**
-     * Обработка возможности
-     */
-    async processOpportunity(opportunity) {
+    async processOpportunityWithLiquidity(opportunity) {
         try {
             const notificationId = createNotificationId(
                 opportunity.token,
@@ -870,54 +801,148 @@ class ArbitrageBot {
                 return;
             }
             
-            // Отправка уведомления
-            const alertSent = await telegramNotifier.sendArbitrageAlert(opportunity);
+            // Отправка уведомления с детальной информацией о ликвидности
+            const alertSent = await telegramNotifier.sendArbitrageAlertWithLiquidity(opportunity);
             
             if (alertSent) {
-                logger.logSuccess(`📱 Alert sent for ${opportunity.token} arbitrage`);
+                logger.logSuccess(`📱 Enhanced alert sent for ${opportunity.token} arbitrage`);
+                
+                // Дополнительное логирование для высоколиквидных возможностей
+                if (opportunity.effectiveLiquidity > 50000) {
+                    logger.logInfo(`🏆 High-liquidity opportunity: ${opportunity.token} with ${(opportunity.effectiveLiquidity/1000).toFixed(0)}K effective liquidity`);
+                }
             } else {
-                logger.logWarning(`📱 Failed to send alert for ${opportunity.token}`);
+                logger.logWarning(`📱 Failed to send enhanced alert for ${opportunity.token}`);
             }
             
         } catch (error) {
-            logger.logError('Error processing opportunity', error);
+            logger.logError('Error processing opportunity with liquidity details', error);
         }
     }
     
+    // Остальные методы (с минимальными изменениями)...
+    
+    getMinLiquidityThreshold(tokenSymbol) {
+        const dynamicThresholds = config.settings?.minLiquidityUSD || {};
+        
+        if (dynamicThresholds[tokenSymbol]) {
+            return dynamicThresholds[tokenSymbol];
+        }
+        
+        const stablecoins = ['USDC', 'USDT'];
+        if (stablecoins.includes(tokenSymbol)) return 500;
+        if (['WBTC', 'WETH'].includes(tokenSymbol)) return 2000;
+        return 1000;
+    }
+    
+    async calculateTiming(opportunity) {
+        try {
+            if (this.timeCalculator && typeof this.timeCalculator.calculateArbitrageTimings === 'function') {
+                return await this.timeCalculator.calculateArbitrageTimings(opportunity, this.getProvider());
+            } else {
+                return this.calculateSimpleTiming(opportunity);
+            }
+        } catch (error) {
+            logger.logError('Timing calculation failed, using fallback', error);
+            return this.calculateSimpleTiming(opportunity);
+        }
+    }
+    
+    calculateSimpleTiming(opportunity) {
+        const { basisPoints, potentialProfit, buyLiquidity, sellLiquidity } = opportunity;
+        
+        const gasEstimate = 2.5;
+        const dexFees = opportunity.inputAmount * 0.006;
+        const slippageCost = opportunity.inputAmount * 0.003;
+        const totalCosts = gasEstimate + dexFees + slippageCost;
+        
+        const adjustedProfit = Math.max(0, potentialProfit - totalCosts);
+        
+        let confidence = 0.5;
+        if (basisPoints > 150) confidence += 0.2;
+        if (basisPoints > 100) confidence += 0.1;
+        if (Math.min(buyLiquidity, sellLiquidity) > 5000) confidence += 0.1;
+        if (opportunity.buyPath?.length === 2 && opportunity.sellPath?.length === 2) confidence += 0.1;
+        
+        confidence = Math.min(0.9, confidence);
+        
+        const strategyMinConfidence = this.activeStrategy.minConfidence || 0.4;
+        const isViable = adjustedProfit > 3 && confidence > strategyMinConfidence;
+        
+        return {
+            isViable,
+            confidence,
+            adjustedProfit: {
+                adjustedProfit,
+                totalCosts,
+                gasInUSD: gasEstimate,
+                dexFees,
+                slippageCost
+            },
+            executionTime: 8000,
+            deadline: Date.now() + 20000,
+            recommendation: {
+                action: adjustedProfit > 10 ? 'EXECUTE' : 'MONITOR',
+                reason: `Strategy calculation: ${adjustedProfit.toFixed(2)} profit`,
+                priority: Math.min(8, Math.floor(adjustedProfit / 2))
+            }
+        };
+    }
+    
     /**
-     * Логирование сводки отклонений
+     * НОВЫЙ: Логирование сводки отклонений с анализом ликвидности
      */
-    logRejectionSummary(rejectedOpportunities) {
+    logRejectionSummaryWithLiquidity(rejectedOpportunities) {
         if (rejectedOpportunities.length === 0) return;
         
         const rejectionCounts = {};
+        const liquidityCounts = { low: 0, zero: 0, issues: 0 };
+        
         rejectedOpportunities.forEach(rejection => {
             const reason = rejection.rejectionReason || 'unknown';
             rejectionCounts[reason] = (rejectionCounts[reason] || 0) + 1;
+            
+            // Анализ проблем с ликвидностью
+            if (reason === 'low_liquidity') {
+                liquidityCounts.low++;
+                if (rejection.liquidityData?.issues) {
+                    liquidityCounts.issues += rejection.liquidityData.issues.length;
+                }
+            }
         });
         
-        logger.logInfo('📊 Rejection Summary:');
+        logger.logInfo('📊 Rejection Summary with Liquidity Analysis:');
         Object.entries(rejectionCounts).forEach(([reason, count]) => {
             logger.logInfo(`   ${reason}: ${count} tokens`);
         });
         
-        // Топ отклоненных токенов
+        // Детальная статистика ликвидности
+        if (liquidityCounts.low > 0) {
+            logger.logInfo('💧 Liquidity Issues:');
+            logger.logInfo(`   Low liquidity rejections: ${liquidityCounts.low}`);
+            logger.logInfo(`   Total liquidity issues detected: ${liquidityCounts.issues}`);
+        }
+        
         const tokenRejections = rejectedOpportunities
             .filter(r => r.token)
             .slice(0, 5);
         
         if (tokenRejections.length > 0) {
-            logger.logInfo('🔍 Sample rejections:');
+            logger.logInfo('🔍 Sample rejections with liquidity details:');
             tokenRejections.forEach(rejection => {
-                logger.logInfo(`   ${rejection.token}: ${rejection.rejectionReason} - ${rejection.details || 'N/A'}`);
+                let details = rejection.details || 'N/A';
+                if (rejection.liquidityData) {
+                    details += ` (${rejection.liquidityData.validPrices || 0} valid prices, ${rejection.liquidityData.liquidPrices || 0} liquid)`;
+                }
+                logger.logInfo(`   ${rejection.token}: ${rejection.rejectionReason} - ${details}`);
             });
         }
     }
     
     /**
-     * Диагностическая проверка
+     * НОВЫЙ: Диагностическая проверка ликвидности
      */
-    async diagnosticCheck() {
+    async diagnosticLiquidityCheck(liquidityResults) {
         const recentErrors = this.stats.failedPriceFetches;
         const recentSuccess = this.stats.successfulPriceFetches;
         const totalAttempts = recentErrors + recentSuccess;
@@ -932,6 +957,16 @@ class ArbitrageBot {
             }
         }
         
+        // НОВЫЙ анализ ликвидности
+        const liquidityStats = this.stats.liquidityStats;
+        logger.logInfo(`💧 Liquidity Analysis:`);
+        logger.logInfo(`   Total pairs analyzed: ${liquidityStats.totalLiquidityAnalyzed}`);
+        logger.logInfo(`   Average liquidity: ${(liquidityStats.averageLiquidity/1000).toFixed(1)}K`);
+        logger.logInfo(`   Low liquidity pairs: ${liquidityStats.lowLiquidityPairs}`);
+        logger.logInfo(`   High liquidity pairs: ${liquidityStats.highLiquidityPairs}`);
+        logger.logInfo(`   Multi-hop opportunities: ${liquidityStats.multiHopOpportunities}`);
+        logger.logInfo(`   Liquidity issues detected: ${liquidityStats.liquidityIssuesDetected}`);
+        
         // Анализ активной стратегии
         logger.logInfo(`🎯 Strategy Analysis:`);
         logger.logInfo(`   Current: ${this.activeStrategy.name}`);
@@ -940,18 +975,24 @@ class ArbitrageBot {
         logger.logInfo(`   Low liquidity: ${this.activeStrategy.enableLowLiquidityTokens ? 'Enabled' : 'Disabled'}`);
         logger.logInfo(`   Multi-hop: ${this.activeStrategy.enableMultiHop ? 'Enabled' : 'Disabled'}`);
         
-        // Рекомендации по настройке
+        // Рекомендации по улучшению
         if (this.stats.totalChecks > 100 && this.stats.opportunitiesFound === 0) {
-            logger.logWarning('💡 No opportunities found. Try:');
-            logger.logWarning('   - Switch to "aggressive" strategy');
-            logger.logWarning('   - Enable low liquidity tokens');
+            logger.logWarning('💡 No opportunities found. Recommendations:');
+            
+            if (liquidityStats.lowLiquidityPairs > liquidityStats.highLiquidityPairs) {
+                logger.logWarning('   - Enable low liquidity tokens in strategy');
+                logger.logWarning('   - Consider switching to "aggressive" strategy');
+            }
+            
+            if (liquidityStats.multiHopOpportunities === 0) {
+                logger.logWarning('   - Enable multi-hop routing for more paths');
+            }
+            
             logger.logWarning('   - Lower minimum spread in config');
+            logger.logWarning('   - Check if DEX contracts are up to date');
         }
     }
     
-    /**
-     * Обновление статистики отклонений
-     */
     updateRejectionStats(reason) {
         if (this.stats.rejectionStats[reason]) {
             this.stats.rejectionStats[reason]++;
@@ -960,9 +1001,6 @@ class ArbitrageBot {
         }
     }
     
-    /**
-     * Обновление статистики прибыли
-     */
     updateProfitStatistics(opportunities) {
         const totalProfit = opportunities.reduce((sum, op) => sum + (op.adjustedProfit || 0), 0);
         this.stats.totalPotentialProfit += totalProfit;
@@ -973,25 +1011,49 @@ class ArbitrageBot {
         }
     }
     
+    async switchProvider() {
+        if (this.providers.length <= 1) {
+            logger.logWarning('⚠️ Cannot switch provider - only one available');
+            return false;
+        }
+        
+        const oldIndex = this.currentProviderIndex;
+        this.currentProviderIndex = (this.currentProviderIndex + 1) % this.providers.length;
+        this.stats.rpcFailovers++;
+        
+        const newProvider = this.getProvider();
+        
+        if (this.priceFetcher && typeof this.priceFetcher.updateProvider === 'function') {
+            try {
+                this.priceFetcher.updateProvider(newProvider);
+                logger.logInfo(`🔄 Switched to RPC provider ${this.currentProviderIndex + 1}/${this.providers.length}`);
+                return true;
+            } catch (error) {
+                logger.logError('Failed to update PriceFetcher provider', error);
+                this.currentProviderIndex = oldIndex;
+                return false;
+            }
+        }
+        
+        return false;
+    }
+    
     async attemptRecovery(error) {
         logger.logInfo('🔄 Attempting recovery...');
         
         try {
-            // 1. Попытка переключения провайдера
             const providerSwitched = await this.switchProvider();
             
-            // 2. Пересоздание PriceFetcher если необходимо
             if (!this.priceFetcher || error.message.includes('PriceFetcher')) {
                 try {
-                    this.priceFetcher = new PriceFetcher(this.getProvider());
-                    logger.logInfo('✅ PriceFetcher recreated');
+                    this.priceFetcher = new EnhancedPriceFetcher(this.getProvider());
+                    logger.logInfo('✅ Enhanced PriceFetcher recreated');
                 } catch (pfError) {
-                    logger.logError('Failed to recreate PriceFetcher', pfError);
+                    logger.logError('Failed to recreate Enhanced PriceFetcher', pfError);
                     return false;
                 }
             }
             
-            // 3. Тест связи
             const provider = this.getProvider();
             await provider.getBlockNumber();
             
@@ -1007,8 +1069,18 @@ class ArbitrageBot {
     async saveStats() {
         try {
             await saveNotificationsCache(this.recentNotifications);
+            
+            // Сохраняем расширенную статистику
+            const enhancedStats = {
+                ...this.stats,
+                timestamp: getCurrentTimestamp(),
+                strategy: this.activeStrategy.name,
+                version: '2.1-enhanced'
+            };
+            
+            await fs.writeJson('./data/enhanced_stats.json', enhancedStats, { spaces: 2 });
         } catch (error) {
-            logger.logError('Failed to save stats', error);
+            logger.logError('Failed to save enhanced stats', error);
         }
     }
     
@@ -1030,14 +1102,23 @@ class ArbitrageBot {
                 ((this.stats.profitableOpportunities / this.stats.opportunitiesFound) * 100).toFixed(1) + '%' : 'N/A',
             priceSuccessRate: (this.stats.successfulPriceFetches + this.stats.failedPriceFetches) > 0 ?
                 ((this.stats.successfulPriceFetches / (this.stats.successfulPriceFetches + this.stats.failedPriceFetches)) * 100).toFixed(1) + '%' : 'N/A',
-            activeStrategy: this.activeStrategy.name
+            activeStrategy: this.activeStrategy.name,
+            
+            // НОВАЯ статистика ликвидности
+            liquiditySummary: {
+                averageLiquidity: `${(this.stats.liquidityStats.averageLiquidity/1000).toFixed(1)}K`,
+                lowLiquidityRatio: this.stats.liquidityStats.totalLiquidityAnalyzed > 0 ? 
+                    ((this.stats.liquidityStats.lowLiquidityPairs / this.stats.liquidityStats.totalLiquidityAnalyzed) * 100).toFixed(1) + '%' : 'N/A',
+                multiHopRatio: this.stats.liquidityStats.totalLiquidityAnalyzed > 0 ?
+                    ((this.stats.liquidityStats.multiHopOpportunities / this.stats.liquidityStats.totalLiquidityAnalyzed) * 100).toFixed(1) + '%' : 'N/A'
+            }
         };
     }
     
     async printStats() {
         const stats = this.getStats();
         
-        logger.logInfo('📊 Enhanced Bot Statistics:');
+        logger.logInfo('📊 Enhanced Bot Statistics with Liquidity Analysis:');
         logger.logInfo(`   ⏱️ Uptime: ${stats.uptime}`);
         logger.logInfo(`   🎯 Strategy: ${stats.activeStrategy}`);
         logger.logInfo(`   🔍 Total checks: ${stats.totalChecks}`);
@@ -1052,11 +1133,22 @@ class ArbitrageBot {
         logger.logInfo(`   🌐 Active providers: ${stats.activeProviders}`);
         logger.logInfo(`   🔄 RPC failovers: ${stats.rpcFailovers}`);
         
+        // НОВАЯ статистика ликвидности
+        logger.logInfo(`   💧 Liquidity Summary:`);
+        logger.logInfo(`     Average liquidity: ${stats.liquiditySummary.averageLiquidity}`);
+        logger.logInfo(`     Low liquidity ratio: ${stats.liquiditySummary.lowLiquidityRatio}`);
+        logger.logInfo(`     Multi-hop ratio: ${stats.liquiditySummary.multiHopRatio}`);
+        logger.logInfo(`     Issues detected: ${stats.liquidityStats.liquidityIssuesDetected}`);
+        
         if (stats.bestOpportunity) {
-            logger.logInfo(`   🏆 Best opportunity: ${stats.bestOpportunity.token} (${stats.bestOpportunity.basisPoints} bps, ${stats.bestOpportunity.adjustedProfit.toFixed(2)})`);
+            const best = stats.bestOpportunity;
+            logger.logInfo(`   🏆 Best opportunity: ${best.token} (${best.basisPoints} bps, ${best.adjustedProfit.toFixed(2)})`);
+            if (best.liquidityDetails) {
+                logger.logInfo(`     Liquidity: Buy ${(best.liquidityDetails.buyLiquidity/1000).toFixed(1)}K, Sell ${(best.liquidityDetails.sellLiquidity/1000).toFixed(1)}K`);
+                logger.logInfo(`     Effective: ${(best.liquidityDetails.effectiveLiquidity/1000).toFixed(1)}K`);
+            }
         }
         
-        // Показываем статистику отклонений
         const topRejections = Object.entries(stats.rejectionStats)
             .sort(([,a], [,b]) => b - a)
             .slice(0, 3);
@@ -1066,11 +1158,77 @@ class ArbitrageBot {
         }
     }
     
+    async start() {
+        if (this.isRunning) {
+            logger.logWarning('⚠️ Bot is already running');
+            return;
+        }
+        
+        if (!this.isInitialized) {
+            logger.logInfo('⏳ Waiting for initialization to complete...');
+            await this.init();
+        }
+        
+        this.isRunning = true;
+        this.startTime = Date.now();
+        
+        logger.logSuccess('🚀 Starting enhanced arbitrage monitoring with liquidity analysis...');
+        logger.logInfo(`📊 Checking ${Object.keys(config.tokens).length} tokens across ${Object.keys(config.dexes).length} DEXes`);
+        logger.logInfo(`⏱️ Check interval: ${config.settings.checkIntervalMs / 1000}s`);
+        logger.logInfo(`💰 Input amount: ${config.settings.inputAmountUSD}`);
+        logger.logInfo(`📈 Strategy: ${this.activeStrategy.name} (${this.activeStrategy.minBasisPoints} bps min)`);
+        logger.logInfo(`🔧 Low liquidity tokens: ${this.activeStrategy.enableLowLiquidityTokens ? 'Enabled' : 'Disabled'}`);
+        logger.logInfo(`🔄 Multi-hop: ${this.activeStrategy.enableMultiHop ? 'Enabled' : 'Disabled'}`);
+        logger.logInfo(`💧 Enhanced liquidity analysis: Enabled`);
+        
+        try {
+            await telegramNotifier.sendStartupNotification();
+        } catch (error) {
+            logger.logWarning('Failed to send startup notification', error.message);
+        }
+        
+        this.runLoop().catch(error => {
+            logger.logError('Main loop crashed', error);
+            this.handleCriticalError(error);
+        });
+        
+        process.on('SIGINT', () => this.stop());
+        process.on('SIGTERM', () => this.stop());
+    }
+    
+    async runLoop() {
+        while (this.isRunning) {
+            try {
+                if (!this.isInitialized || !this.priceFetcher) {
+                    logger.logWarning('⚠️ Bot not properly initialized, attempting re-initialization...');
+                    await this.init();
+                }
+                
+                await this.checkAllTokens();
+                await this.saveStats();
+                
+                await sleep(config.settings.checkIntervalMs);
+                
+            } catch (error) {
+                logger.logError('❌ Error in main loop', error);
+                this.stats.errors++;
+                
+                const recovered = await this.attemptRecovery(error);
+                if (!recovered) {
+                    logger.logError('Failed to recover from error, stopping bot');
+                    break;
+                }
+                
+                await sleep(5000);
+            }
+        }
+    }
+    
     async handleCriticalError(error) {
         logger.logError('🚨 Critical error occurred', error);
         
         try {
-            await telegramNotifier.sendErrorAlert(error, 'Critical bot error - stopping');
+            await telegramNotifier.sendErrorAlert(error, 'Critical enhanced bot error - stopping');
         } catch (notificationError) {
             logger.logError('Failed to send critical error notification', notificationError);
         }
@@ -1080,7 +1238,7 @@ class ArbitrageBot {
     
     async stop() {
         if (!this.isRunning) {
-            logger.logWarning('⚠️ Bot is not running');
+            logger.logWarning('⚠️ Enhanced bot is not running');
             return;
         }
         
@@ -1091,7 +1249,6 @@ class ArbitrageBot {
             await this.saveStats();
             await this.printStats();
             
-            // Отправка уведомления об остановке
             try {
                 const finalStats = this.getStats();
                 await telegramNotifier.sendShutdownNotification(finalStats);
@@ -1099,24 +1256,85 @@ class ArbitrageBot {
                 logger.logWarning('Failed to send shutdown notification', error.message);
             }
             
-            logger.logSuccess('✅ Enhanced bot stopped gracefully');
+            logger.logSuccess('✅ Enhanced bot with liquidity analysis stopped gracefully');
         } catch (error) {
-            logger.logError('Error during shutdown', error);
+            logger.logError('Error during enhanced bot shutdown', error);
+        }
+    }
+    
+    // Методы валидации и загрузки (остаются прежними)
+    async validateConfiguration() {
+        logger.logInfo('⚙️ Validating configuration...');
+        
+        const requiredTokens = ['WMATIC', 'USDC', 'WETH'];
+        for (const tokenSymbol of requiredTokens) {
+            if (!config.tokens[tokenSymbol]) {
+                throw new Error(`Missing required token: ${tokenSymbol}`);
+            }
+        }
+        
+        const requiredDEXes = ['sushiswap', 'quickswap'];
+        for (const dexName of requiredDEXes) {
+            if (!config.dexes[dexName]) {
+                throw new Error(`Missing required DEX: ${dexName}`);
+            }
+        }
+        
+        const pathsCount = Object.keys(config.tradingPaths || {}).length;
+        if (pathsCount === 0) {
+            throw new Error('No trading paths configured');
+        }
+        
+        logger.logSuccess('✅ Configuration validated');
+    }
+    
+    async testConnections() {
+        logger.logInfo('🔍 Testing connections...');
+        
+        const telegramStatus = telegramNotifier.getStatus();
+        if (telegramStatus.configured) {
+            logger.logSuccess('✅ Telegram connection working');
+        } else {
+            logger.logWarning('⚠️ Telegram not configured - notifications disabled');
+        }
+        
+        try {
+            const provider = this.getProvider();
+            const [blockNumber, network] = await Promise.all([
+                provider.getBlockNumber(),
+                provider.getNetwork()
+            ]);
+            
+            if (Number(network.chainId) !== 137) {
+                throw new Error(`Wrong network: expected 137, got ${network.chainId}`);
+            }
+            
+            logger.logSuccess(`✅ RPC working - Block: ${blockNumber}, Chain: ${network.chainId}`);
+        } catch (error) {
+            throw new Error(`RPC connection test failed: ${error.message}`);
+        }
+    }
+    
+    async loadNotificationsCache() {
+        try {
+            this.recentNotifications = await loadNotificationsCache();
+            logger.logInfo(`📋 Loaded ${this.recentNotifications.size} cached notifications`);
+        } catch (error) {
+            logger.logWarning('⚠️ Failed to load notifications cache, starting fresh');
+            this.recentNotifications = new Map();
         }
     }
 }
 
 // Создание и запуск бота
 if (require.main === module) {
-    const bot = new ArbitrageBot();
+    const bot = new EnhancedArbitrageBot();
     
-    // Запуск бота с обработкой ошибок
     bot.start().catch(error => {
-        logger.logError('Failed to start bot', error);
+        logger.logError('Failed to start enhanced bot', error);
         process.exit(1);
     });
     
-    // Периодическая отчетность
     setInterval(() => {
         if (bot.isRunning && bot.isInitialized) {
             bot.printStats();
@@ -1124,4 +1342,4 @@ if (require.main === module) {
     }, 300000); // Каждые 5 минут
 }
 
-module.exports = ArbitrageBot;
+module.exports = EnhancedArbitrageBot;
