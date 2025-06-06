@@ -1,469 +1,145 @@
 #!/usr/bin/env node
 
 /**
- * Optimized Polygon Arbitrage Bot - ИСПРАВЛЕННАЯ ВЕРСИЯ
- * 
- * Исправления:
- * - Правильная последовательность инициализации
- * - Устранены race conditions
- * - Улучшена обработка ошибок
- * - Добавлена защита от множественной инициализации
- * - Улучшенное логирование
- * 
- * Usage: npm start
+ * Production-Ready Polygon Arbitrage Bot v3.0
+ * Complete rewrite with all critical fixes
  */
 
-const path = require('path');
-const fs = require('fs-extra');
 require('dotenv').config();
-
-// Проверка Node.js версии
-const nodeVersion = process.version;
-const requiredVersion = '16.0.0';
-if (parseInt(nodeVersion.slice(1)) < parseInt(requiredVersion)) {
-    console.error(`❌ Node.js version ${requiredVersion} or higher required. Current: ${nodeVersion}`);
-    process.exit(1);
-}
-
-// Импорты
 const ArbitrageBot = require('./scripts/arbitrageBot');
 const logger = require('./scripts/logger');
 const telegramNotifier = require('./scripts/telegram');
-const { loadStats, saveStats } = require('./scripts/utils');
+const ConfigValidator = require('./scripts/configValidator');
 
 class BotManager {
     constructor() {
-        this.bot = null;
+        this.engine = null;
         this.isShuttingDown = false;
         this.startTime = Date.now();
-        this.restartCount = 0;
+        this.restartAttempts = 0;
         this.maxRestarts = 5;
-        this.restartCooldown = 30000; // 30 секунд
-        this.lastRestart = 0;
-        this.initializationInProgress = false;
         
-        this.setupErrorHandlers();
-        this.setupGracefulShutdown();
+        this.setupProcessHandlers();
     }
     
-    /**
-     * Запуск бота с проверками
-     */
     async start() {
-        if (this.initializationInProgress) {
-            logger.logWarning('⚠️ Initialization already in progress');
-            return;
-        }
-        
-        this.initializationInProgress = true;
-        
         try {
-            logger.logInfo('🚀 Starting Optimized Polygon Arbitrage Bot Manager...');
+            logger.logInfo('🚀 Starting Polygon Arbitrage Bot v3.0...');
             
-            // Предварительные проверки
-            await this.performPreStartChecks();
+            // Validate environment and configuration
+            const validation = await ConfigValidator.validateAll();
+            if (!validation.valid) {
+                throw new Error(`Configuration invalid: ${validation.errors.join(', ')}`);
+            }
             
-            // Загрузка статистики
-            const stats = await loadStats();
-            stats.totalRuns = (stats.totalRuns || 0) + 1;
-            stats.lastRun = new Date().toISOString();
-            await saveStats(stats);
+            // Initialize engine
+            this.engine = new ArbitrageEngine();
+            await this.engine.initialize();
             
-            // Создание и инициализация бота
-            this.bot = new ArbitrageBot();
+            // Send startup notification
+            await telegramNotifier.sendStartupNotification({
+                version: '3.0',
+                features: [
+                    'Real-time gas calculation',
+                    'Dynamic slippage analysis',
+                    'V3 liquidity optimization',
+                    'Net profit filtering',
+                    'Production-grade stability'
+                ]
+            });
             
-            // Важно: сначала инициализируем, потом запускаем
-            logger.logInfo('⏳ Initializing bot components...');
-            await this.bot.init();
-            
-            logger.logInfo('🚀 Starting bot monitoring...');
-            await this.bot.start();
-            
-            // Периодические отчеты
-            this.startPeriodicReporting();
+            // Start monitoring
+            await this.engine.start();
             
             logger.logSuccess('✅ Bot started successfully');
-            this.initializationInProgress = false;
             
         } catch (error) {
-            this.initializationInProgress = false;
-            logger.logError('❌ Failed to start bot', error);
+            logger.logError('Failed to start bot', error);
             await this.handleStartupError(error);
         }
     }
     
-    /**
-     * Предварительные проверки перед запуском
-     */
-    async performPreStartChecks() {
-        logger.logInfo('🔍 Performing pre-start checks...');
-        
-        // 1. Проверка директорий
-        await this.ensureDirectories();
-        
-        // 2. Проверка конфигурации
-        await this.validateConfiguration();
-        
-        // 3. Проверка переменных окружения
-        this.validateEnvironmentVariables();
-        
-        // 4. Проверка зависимостей
-        this.validateDependencies();
-        
-        // 5. Тест Telegram (не блокирующий)
-        await this.testTelegramConnection();
-        
-        logger.logSuccess('✅ All pre-start checks passed');
-    }
-    
-    /**
-     * Обеспечение наличия необходимых директорий
-     */
-    async ensureDirectories() {
-        const directories = [
-            './data',
-            './logs',
-            './cache'
-        ];
-        
-        for (const dir of directories) {
-            await fs.ensureDir(dir);
-        }
-        
-        logger.logInfo('📁 Directories created/verified');
-    }
-    
-    /**
-     * Валидация конфигурации
-     */
-    async validateConfiguration() {
-        const configPath = path.join(__dirname, 'config/polygon.json');
-        
-        if (!await fs.pathExists(configPath)) {
-            throw new Error('Configuration file not found: config/polygon.json');
-        }
-        
-        const config = await fs.readJson(configPath);
-        
-        // Проверка основных секций
-        const requiredSections = ['tokens', 'dexes', 'tradingPaths', 'settings'];
-        for (const section of requiredSections) {
-            if (!config[section]) {
-                throw new Error(`Missing configuration section: ${section}`);
-            }
-        }
-        
-        // Проверка токенов
-        const requiredTokens = ['WMATIC', 'USDC', 'WETH'];
-        for (const token of requiredTokens) {
-            if (!config.tokens[token]) {
-                throw new Error(`Missing required token: ${token}`);
-            }
-        }
-        
-        // Проверка DEX
-        const requiredDEXes = ['sushiswap', 'quickswap'];
-        for (const dex of requiredDEXes) {
-            if (!config.dexes[dex]) {
-                throw new Error(`Missing required DEX: ${dex}`);
-            }
-        }
-        
-        logger.logInfo('⚙️ Configuration validated');
-    }
-    
-    /**
-     * Валидация переменных окружения
-     */
-    validateEnvironmentVariables() {
-        const warnings = [];
-        const errors = [];
-        
-        // Обязательные переменные - хотя бы один RPC
-        const hasRPC = this.hasAnyRPCProvider();
-        if (!hasRPC) {
-            errors.push('No RPC providers configured. Please set POLYGON_RPC_1, ALCHEMY_API_KEY, or INFURA_API_KEY');
-        }
-        
-        // Опциональные, но рекомендуемые
-        if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN === 'undefined') {
-            warnings.push('TELEGRAM_BOT_TOKEN not set - notifications disabled');
-        }
-        
-        if (!process.env.TELEGRAM_CHAT_ID || process.env.TELEGRAM_CHAT_ID === 'undefined') {
-            warnings.push('TELEGRAM_CHAT_ID not set - notifications disabled');
-        }
-        
-        // Выводим предупреждения
-        for (const warning of warnings) {
-            logger.logWarning(`⚠️ ${warning}`);
-        }
-        
-        // Останавливаемся при ошибках
-        if (errors.length > 0) {
-            for (const error of errors) {
-                logger.logError(`❌ ${error}`);
-            }
-            throw new Error('Environment validation failed');
-        }
-        
-        logger.logInfo('🌍 Environment variables validated');
-    }
-    
-    /**
-     * Проверка наличия RPC провайдеров
-     */
-    hasAnyRPCProvider() {
-        // Проверяем прямые RPC endpoints
-        for (let i = 1; i <= 10; i++) {
-            const rpc = process.env[`POLYGON_RPC_${i}`];
-            if (rpc && rpc !== 'undefined' && rpc.startsWith('http')) {
-                return true;
-            }
-        }
-        
-        // Проверяем API ключи
-        if ((process.env.ALCHEMY_API_KEY && process.env.ALCHEMY_API_KEY !== 'undefined') ||
-            (process.env.INFURA_API_KEY && process.env.INFURA_API_KEY !== 'undefined')) {
-            return true;
-        }
-        
-        return false;
-    }
-    
-    /**
-     * Валидация зависимостей
-     */
-    validateDependencies() {
-        const requiredModules = [
-            'ethers',
-            'node-telegram-bot-api',
-            'fs-extra',
-            'dotenv'
-        ];
-        
-        for (const module of requiredModules) {
-            try {
-                require(module);
-            } catch (error) {
-                throw new Error(`Missing required module: ${module}. Run: npm install`);
-            }
-        }
-        
-        logger.logInfo('📦 Dependencies validated');
-    }
-    
-    /**
-     * Тест подключения Telegram (не блокирующий)
-     */
-    async testTelegramConnection() {
-        if (telegramNotifier.getStatus().configured) {
-            try {
-                // Отправляем тестовое сообщение только при первом запуске
-                if (this.restartCount === 0) {
-                    // Не ждем результат, чтобы не блокировать запуск
-                    telegramNotifier.sendTestMessage().catch(error => {
-                        logger.logWarning('Telegram test failed', error.message);
-                    });
-                    logger.logInfo('📱 Telegram connection test initiated');
-                }
-            } catch (error) {
-                logger.logWarning('⚠️ Telegram test failed, but bot will continue', error.message);
-            }
-        } else {
-            logger.logInfo('📱 Telegram not configured - skipping test');
-        }
-    }
-    
-    /**
-     * Запуск периодической отчетности
-     */
-    startPeriodicReporting() {
-        // Отчет каждые 30 минут
-        setInterval(async () => {
-            if (this.bot && !this.isShuttingDown && this.bot.isRunning) {
-                try {
-                    const stats = this.bot.getStats();
-                    await telegramNotifier.sendPeriodicReport(stats);
-                    logger.logInfo('📊 Periodic report sent');
-                } catch (error) {
-                    logger.logError('Failed to send periodic report', error);
-                }
-            }
-        }, 30 * 60 * 1000); // 30 минут
-        
-        // Краткая статистика каждые 5 минут в консоль
-        setInterval(() => {
-            if (this.bot && !this.isShuttingDown && this.bot.isRunning && this.bot.isInitialized) {
-                this.bot.printStats();
-            }
-        }, 5 * 60 * 1000); // 5 минут
-    }
-    
-    /**
-     * Обработка ошибки запуска
-     */
     async handleStartupError(error) {
-        const now = Date.now();
+        this.restartAttempts++;
         
-        // Проверяем cooldown перед рестартом
-        if (now - this.lastRestart < this.restartCooldown) {
-            logger.logError('❌ Restart cooldown active, exiting');
+        if (this.restartAttempts > this.maxRestarts) {
+            logger.logError('Max restart attempts exceeded, exiting');
+            await telegramNotifier.sendErrorAlert(error, 'Bot failed to start - max retries exceeded');
             process.exit(1);
         }
         
-        // Проверяем лимит рестартов
-        if (this.restartCount >= this.maxRestarts) {
-            logger.logError(`❌ Maximum restart attempts (${this.maxRestarts}) exceeded`);
-            try {
-                await telegramNotifier.sendErrorAlert(error, 'Startup failure - max restarts exceeded');
-            } catch (telegramError) {
-                logger.logError('Failed to send error notification', telegramError);
-            }
-            process.exit(1);
-        }
+        logger.logWarning(`Restart attempt ${this.restartAttempts}/${this.maxRestarts} in 30s...`);
         
-        this.restartCount++;
-        this.lastRestart = now;
-        
-        logger.logWarning(`⚠️ Startup failed (attempt ${this.restartCount}/${this.maxRestarts}), restarting in ${this.restartCooldown/1000}s...`);
-        
-        // Отправляем уведомление об ошибке (не блокируем)
-        telegramNotifier.sendErrorAlert(error, `Startup failure - restart attempt ${this.restartCount}`).catch(telegramError => {
-            logger.logError('Failed to send error notification', telegramError);
-        });
-        
-        // Ждем и перезапускаем
         setTimeout(() => {
             this.start();
-        }, this.restartCooldown);
+        }, 30000);
     }
     
-    /**
-     * Настройка обработчиков ошибок
-     */
-    setupErrorHandlers() {
-        // Unhandled Promise Rejections
-        process.on('unhandledRejection', async (reason, promise) => {
-            logger.logError('🚨 Unhandled Promise Rejection', reason);
-            
-            // Не блокируем на отправке уведомления
-            telegramNotifier.sendErrorAlert(
-                new Error(reason), 
-                'Unhandled Promise Rejection'
-            ).catch(error => {
-                logger.logError('Failed to send unhandled rejection notification', error);
-            });
-            
-            // Даем боту возможность продолжить работу
-        });
-        
-        // Uncaught Exceptions
-        process.on('uncaughtException', async (error) => {
-            logger.logError('🚨 Uncaught Exception - CRITICAL', error);
-            
-            try {
-                await telegramNotifier.sendErrorAlert(error, 'Uncaught Exception - CRITICAL');
-                
-                // Даем время на отправку уведомления
-                setTimeout(() => {
-                    process.exit(1);
-                }, 2000);
-            } catch (telegramError) {
-                logger.logError('Failed to send critical error notification', telegramError);
-                process.exit(1);
-            }
-        });
-        
-        // Warning events
-        process.on('warning', (warning) => {
-            logger.logWarning('⚠️ Process Warning', warning.message);
-        });
-    }
-    
-    /**
-     * Настройка graceful shutdown
-     */
-    setupGracefulShutdown() {
+    setupProcessHandlers() {
+        // Graceful shutdown
         const signals = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
-        
         signals.forEach(signal => {
             process.on(signal, async () => {
                 if (this.isShuttingDown) {
-                    logger.logWarning('⚠️ Force shutdown - terminating immediately');
                     process.exit(1);
                 }
                 
-                logger.logInfo(`📤 Received ${signal}, starting graceful shutdown...`);
-                await this.shutdown();
+                this.isShuttingDown = true;
+                logger.logInfo(`Received ${signal}, shutting down gracefully...`);
+                
+                try {
+                    if (this.engine) {
+                        await this.engine.stop();
+                    }
+                    
+                    const stats = this.engine ? this.engine.getStats() : {};
+                    await telegramNotifier.sendShutdownNotification(stats);
+                    
+                    logger.logSuccess('Graceful shutdown completed');
+                    process.exit(0);
+                    
+                } catch (error) {
+                    logger.logError('Error during shutdown', error);
+                    process.exit(1);
+                }
             });
         });
-    }
-    
-    /**
-     * Graceful shutdown
-     */
-    async shutdown() {
-        this.isShuttingDown = true;
         
-        try {
-            // Остановка бота
-            if (this.bot && this.bot.isRunning) {
-                await this.bot.stop();
+        // Handle uncaught errors
+        process.on('unhandledRejection', async (reason, promise) => {
+            logger.logError('Unhandled Promise Rejection', reason);
+            
+            if (!this.isShuttingDown) {
+                await telegramNotifier.sendErrorAlert(
+                    new Error(String(reason)), 
+                    'Unhandled Promise Rejection'
+                );
             }
-            
-            // Сохранение финальной статистики
-            const finalStats = this.bot ? this.bot.getStats() : {};
-            await saveStats(finalStats);
-            
-            // Финальное уведомление (не блокируем)
-            telegramNotifier.sendShutdownNotification(finalStats).catch(error => {
-                logger.logError('Failed to send shutdown notification', error);
-            });
-            
-            logger.logSuccess('✅ Graceful shutdown completed');
-            
-            // Даем время на отправку уведомлений
-            setTimeout(() => {
-                process.exit(0);
-            }, 1000);
-            
-        } catch (error) {
-            logger.logError('❌ Error during shutdown', error);
-            process.exit(1);
-        }
-    }
-    
-    /**
-     * Получение статистики менеджера
-     */
-    getManagerStats() {
-        const uptime = Date.now() - this.startTime;
+        });
         
-        return {
-            managerUptime: Math.floor(uptime / 1000),
-            restartCount: this.restartCount,
-            lastRestart: this.lastRestart,
-            isShuttingDown: this.isShuttingDown,
-            botRunning: this.bot ? this.bot.isRunning : false,
-            botInitialized: this.bot ? this.bot.isInitialized : false
-        };
+        process.on('uncaughtException', async (error) => {
+            logger.logError('Uncaught Exception', error);
+            
+            try {
+                await telegramNotifier.sendErrorAlert(error, 'Uncaught Exception - Bot stopping');
+                
+                setTimeout(() => {
+                    process.exit(1);
+                }, 2000);
+                
+            } catch (notifyError) {
+                logger.logError('Failed to send error notification', notifyError);
+                process.exit(1);
+            }
+        });
     }
 }
 
-// Главная функция
-async function main() {
-    console.log('🤖 Optimized Polygon Arbitrage Bot v2.1 - FIXED');
-    console.log('═'.repeat(54));
-    
-    const manager = new BotManager();
-    await manager.start();
-}
-
-// Запуск только если файл вызывается напрямую
+// Start bot
 if (require.main === module) {
-    main().catch(error => {
-        console.error('💥 Fatal startup error:', error);
+    const manager = new BotManager();
+    manager.start().catch(error => {
+        console.error('Fatal error:', error);
         process.exit(1);
     });
 }

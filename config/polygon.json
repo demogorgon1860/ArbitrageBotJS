@@ -60,91 +60,15 @@
       "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
       "quoter": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
       "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
-      "type": "v3",
-      "fees": [500, 3000, 10000]
+      "type": "v3"
     },
-     "quickswapv3": {
+    "quickswapv3": {
       "name": "QuickSwap V3",
       "router": "0xf5b509bB0909a69B1c207E495f687a596C168E12",
-      "quoter": "0xa15F0D7377B2A0C0c10262E4ABE1c5B5BBa7c1c4",
+      "quoter": "0xa15F0D7377B2A0C0c10db814ABE1c5B5BBa7c1c4",
       "factory": "0x411b0fAcC3489691f28ad58c47006AF5E3Ab3A28",
-      "type": "v3",
-      "fees": [500, 3000, 10000],
-      "priority": 2
-    },
-     "sushiswapv3": {
-      "name": "SushiSwap V3", 
-      "factory": "0x917933899c6a5F8E37F31E19f92CdBFF7e8FF0e2",
-      "type": "v3", 
-      "priority": 3
+      "type": "v3"
     }
-  },
-  
-  "tradingPaths": {
-    "WMATIC": [
-      ["WMATIC", "USDC"],
-      ["WMATIC", "USDT"],
-      ["WMATIC", "WETH"]
-    ],
-    "WETH": [
-      ["WETH", "USDC"],
-      ["WETH", "USDT"],
-      ["WETH", "WMATIC"],
-      ["WETH", "WBTC"],
-      ["WETH", "LINK"],
-      ["WETH", "AAVE"]
-    ],
-    "WBTC": [
-      ["WBTC", "USDC"],
-      ["WBTC", "WETH"],
-      ["WBTC", "USDT"],
-      ["WBTC", "WMATIC"]
-    ],
-    "USDC": [
-      ["USDC", "USDT"],
-      ["USDC", "WMATIC"],
-      ["USDC", "WETH"],
-      ["USDC", "WBTC"],
-      ["USDC", "LINK"],
-      ["USDC", "AAVE"],
-      ["USDC", "CRV"]
-    ],
-    "USDT": [
-      ["USDT", "USDC"],
-      ["USDT", "WMATIC"],
-      ["USDT", "WETH"],
-      ["USDT", "WBTC"],
-      ["USDT", "LINK"],
-      ["USDT", "AAVE"],
-      ["USDT", "CRV"]
-    ],
-    "LINK": [
-      ["LINK", "USDC"],
-      ["LINK", "USDT"],
-      ["LINK", "WETH"],
-      ["LINK", "WMATIC"],
-      ["LINK", "WBTC"],
-      ["LINK", "AAVE"],
-      ["LINK", "CRV"]
-    ],
-    "AAVE": [
-      ["AAVE", "USDC"],
-      ["AAVE", "USDT"],
-      ["AAVE", "WETH"],
-      ["AAVE", "WMATIC"],
-      ["AAVE", "WBTC"],
-      ["AAVE", "LINK"],
-      ["AAVE", "CRV"]
-    ],
-    "CRV": [
-      ["CRV", "USDC"],
-      ["CRV", "USDT"],
-      ["CRV", "WETH"],
-      ["CRV", "WMATIC"],
-      ["CRV", "WBTC"],
-      ["CRV", "LINK"],
-      ["CRV", "AAVE"]
-    ]
   },
   
   "settings": {
@@ -155,144 +79,38 @@
     "maxRetries": 3,
     "retryDelayMs": 2000,
     "maxConcurrentRequests": 2,
-    "notificationCooldownMs": 300000,
-    "initializationTimeoutMs": 60000,
-    "recoveryAttempts": 3,
-    
-    "minLiquidityUSD": {
-      "WBTC": 2000,
-      "WETH": 1500,
-      "WMATIC": 1000,
-      "USDC": 500,
-      "USDT": 500,
-      "LINK": 100,
-      "AAVE": 100,
-      "CRV": 100
-    },
-    
-    "slippageTolerance": {
-      "WBTC": 0.8,
-      "WETH": 0.5,
-      "WMATIC": 0.3,
-      "USDC": 0.1,
-      "USDT": 0.1,
-      "LINK": 0.5,
-      "AAVE": 0.8,
-      "CRV": 1.0
-    },
-    
-    "gasLimits": {
-      "approve": 60000,
-      "swap": {
-        "WBTC": 350000,
-        "WETH": 300000,
-        "USDT": 400000,
-        "USDC": 280000,
-        "WMATIC": 250000,
-        "LINK": 290000,
-        "AAVE": 310000,
-        "CRV": 300000
-      }
-    },
-    
-    "profitThresholds": {
-      "minimum": 3,
-      "good": 10,
-      "excellent": 20
-    },
-    
-    "confidenceThresholds": {
-      "minimum": 0.4,
-      "good": 0.6,
-      "excellent": 0.8
-    },
-    
-    "performanceOptimizations": {
-      "batchSize": 2,
-      "maxConcurrentDEX": 2,
-      "cooldownBetweenBatches": 2000,
-      "maxProviders": 5,
-      "providerSwitchThreshold": 30
-    }
+    "notificationCooldownMs": 300000
   },
-  
-  "optimizations": {
-    "enableBatching": true,
-    "enableCaching": true,
-    "cacheExpirationMs": 30000,
-    "enableProviderRotation": true,
-    "enableAdaptiveTimeouts": true,
-    "enableSmartRetries": true,
-    
-    "allowLowLiquidityTokens": true,
-    "enableMultiHop": true,
-    "enablePriceHistory": true,
-    "enableVolatilityAnalysis": true,
-    "enableAdaptiveThresholds": true,
-    "enableDynamicGasPricing": true,
-    "enableNetworkCongestionAnalysis": true,
-    "enableV3Support": true
-  },
-  
-  "strategies": {
-    "enableMultipleStrategies": true,
-    "defaultStrategy": "moderate",
-    
-    "conservative": {
-      "minBasisPoints": 50,
-      "minConfidence": 0.6,
-      "minLiquidityMultiplier": 1.0,
-      "maxSlippagePercent": 2.0,
-      "enableLowLiquidityTokens": false,
-      "enableMultiHop": false
-    },
-    
-    "moderate": {
-      "minBasisPoints": 35,
-      "minConfidence": 0.5,
-      "minLiquidityMultiplier": 0.8,
-      "maxSlippagePercent": 3.0,
-      "enableLowLiquidityTokens": true,
-      "enableMultiHop": true
-    },
-    
-    "aggressive": {
-      "minBasisPoints": 25,
-      "minConfidence": 0.4,
-      "minLiquidityMultiplier": 0.6,
-      "maxSlippagePercent": 5.0,
-      "enableLowLiquidityTokens": true,
-      "enableMultiHop": true
-    }
-  },
-  
-  "monitoring": {
-    "enableDetailedLogging": true,
-    "logLevel": "info",
-    "statsReportingInterval": 300000,
-    "healthCheckInterval": 60000,
-    "cacheCleanupInterval": 3600000,
-    "logAllRejections": true,
-    "enablePerformanceMetrics": true,
-    
-    "errorThresholds": {
-      "maxErrorsPerHour": 50,
-      "maxConsecutiveErrors": 10,
-      "lowSuccessRateThreshold": 30,
-      "maxRejectionRate": 95
-    }
-  },
-  
-  "network": {
-    "chainId": 137,
-    "name": "Polygon",
-    "nativeCurrency": {
-      "name": "MATIC",
-      "symbol": "MATIC",
-      "decimals": 18
-    },
-    "blockExplorer": "https://polygonscan.com",
-    "avgBlockTime": 2200,
-    "confirmations": 1
-  }
+
+  "tradingPairs": [
+  ["WMATIC", "WETH"],
+  ["WMATIC", "WBTC"],
+  ["WMATIC", "USDC"],
+  ["WMATIC", "USDT"],
+  ["WMATIC", "LINK"],
+  ["WMATIC", "AAVE"],
+  ["WMATIC", "CRV"],
+  ["WETH", "WBTC"],
+  ["WETH", "USDC"],
+  ["WETH", "USDT"],
+  ["WETH", "LINK"],
+  ["WETH", "AAVE"],
+  ["WETH", "CRV"],
+  ["WBTC", "USDC"],
+  ["WBTC", "USDT"],
+  ["WBTC", "LINK"],
+  ["WBTC", "AAVE"],
+  ["WBTC", "CRV"],
+  ["USDC", "USDT"],
+  ["USDC", "LINK"],
+  ["USDC", "AAVE"],
+  ["USDC", "CRV"],
+  ["USDT", "LINK"],
+  ["USDT", "AAVE"],
+  ["USDT", "CRV"],
+  ["LINK", "AAVE"],
+  ["LINK", "CRV"],
+  ["AAVE", "CRV"]
+]
+
 }

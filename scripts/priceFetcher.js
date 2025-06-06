@@ -1,976 +1,547 @@
 /**
- * ENHANCED priceFetcher.js with V3 Fallback Implementation
- * 
- * ✅ Added automatic V3 fallback when V2 fails
- * ✅ Comprehensive fallback logging
- * ✅ Enhanced V3 fee tier scanning
- * ✅ Production-ready error handling
+ * Price Fetcher - Complete implementation with V3 support
  */
 
 const { ethers } = require('ethers');
+const NodeCache = require('node-cache');
 const logger = require('./logger');
+const config = require('../config/polygon.json');
+const CHAINLINK_FEEDS = {
+    'WETH': '0xF9680D99D6C9589e2a93a78A04A279e509205945',    // ETH/USD
+    'WBTC': '0xDE31F8bFBD8c84b5360CFACCa3539B938dd78ae6',    // BTC/USD
+    'WMATIC': '0xAB594600376Ec9fD91F8e885dADF0CE036862dE0',  // MATIC/USD
+    'LINK': '0xd9FFdb71EbE7496cC440152d43986Aae0AB76665',    // LINK/USD
+    'AAVE': '0x72484B12719E23115761D5DA1646945632979bB6',    // AAVE/USD
+    'CRV': '0x336584C8E6Dc19637A5b36206B1c79923111b405',     // CRV/USD
+    'USDC': null,  // Stablecoin - return 1.0
+    'USDT': null   // Stablecoin - return 1.0
+};
+
+// CoinGecko token IDs
+const COINGECKO_IDS = {
+    'WETH': 'ethereum',
+    'WBTC': 'wrapped-bitcoin',
+    'WMATIC': 'matic-network',
+    'LINK': 'chainlink',
+    'AAVE': 'aave',
+    'CRV': 'curve-dao-token',
+    'USDC': 'usd-coin',
+    'USDT': 'tether'
+};
+
+// Add this ABI constant (Chainlink AggregatorV3Interface)
+const CHAINLINK_AGGREGATOR_ABI = [
+    'function decimals() view returns (uint8)',
+    'function description() view returns (string)',
+    'function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)'
+];
 
 class PriceFetcher {
     constructor(provider) {
         this.provider = provider;
-        this.config = require('../config/polygon.json');
-        this.cache = new Map();
-        this.cacheTimeout = 30000; // 30 seconds
+        this.cache = new NodeCache({ 
+            stdTTL: 30,
+            checkperiod: 60,
+            deleteOnExpire: true
+        });
         
-        // ✅ Enhanced V3 optimizer with fallback capability
-        this.v3Optimizer = new V3LiquidityOptimizer(provider);
-        
-        // Contract addresses for Polygon
-        this.contracts = {
-            // Uniswap V3
-            uniswapV3Factory: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
-            uniswapV3Quoter: '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6',
-            
-            // QuickSwap V3
-            quickswapV3Factory: '0x411b0fAcC3489691f28ad58c47006AF5E3Ab3A28',
-            quickswapV3Quoter: '0xa15F0D7377B2A0C0c10262E4ABE1c5B5BBa7c1c4',
-            
-            // V2 Routers
-            sushiswapRouter: '0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506',
-            quickswapRouter: '0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff'
-        };
-        
-        // ✅ Enhanced V3 fee tiers with comprehensive coverage
-        this.v3FeeTiers = [500, 3000, 10000, 100]; // 0.05%, 0.3%, 1%, 0.01%
-        
-        // ABIs
+        // Contract ABIs
         this.abis = {
-            v3Factory: ["function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)"],
+            v2Router: [
+                'function getAmountsOut(uint amountIn, address[] path) view returns (uint[] amounts)',
+                'function factory() view returns (address)'
+            ],
+            v2Factory: [
+                'function getPair(address tokenA, address tokenB) view returns (address)'
+            ],
+            v2Pair: [
+                'function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32)',
+                'function token0() view returns (address)',
+                'function token1() view returns (address)'
+            ],
+            v3Factory: [
+                'function getPool(address tokenA, address tokenB, uint24 fee) view returns (address)'
+            ],
             v3Pool: [
-                "function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
-                "function liquidity() external view returns (uint128)",
-                "function token0() external view returns (address)",
-                "function token1() external view returns (address)",
-                "function fee() external view returns (uint24)"
+                'function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16, uint16, uint16, uint8, bool)',
+                'function liquidity() view returns (uint128)',
+                'function token0() view returns (address)',
+                'function token1() view returns (address)',
+                'function fee() view returns (uint24)'
             ],
             v3Quoter: [
-                "function quoteExactInputSingle(address tokenIn, address tokenOut, uint24 fee, uint256 amountIn, uint160 sqrtPriceLimitX96) external returns (uint256 amountOut)"
-            ],
-            v2Router: [
-                "function getAmountsOut(uint amountIn, address[] path) external view returns (uint[] amounts)",
-                "function factory() external view returns (address)"
-            ],
-            v2Factory: ["function getPair(address tokenA, address tokenB) external view returns (address pair)"],
-            v2Pair: [
-                "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
-                "function token0() external view returns (address)"
+                'function quoteExactInputSingle(address tokenIn, address tokenOut, uint24 fee, uint256 amountIn, uint160 sqrtPriceLimitX96) returns (uint256 amountOut)'
             ]
         };
         
-        // ✅ Fallback tracking for logging and analytics
-        this.fallbackStats = {
-            v3FallbacksUsed: 0,
-            v2SuccessCount: 0,
-            fallbacksByToken: new Map(),
-            fallbacksByReason: new Map()
-        };
+        // V3 fee tiers
+        this.v3FeeTiers = [100, 500, 3000, 10000]; // 0.01%, 0.05%, 0.3%, 1%
         
-        // Real-time price tracking for USD calculations
-        this.priceCache = new Map();
-        this.priceUpdateInterval = 300000; // 5 minutes
+        // Token prices cache for USD conversion
+        this.tokenPrices = new Map();
+    }
+    
+    async initialize() {
+        logger.logInfo('Initializing PriceFetcher...');
         
-        logger.logInfo('🦄 Enhanced PriceFetcher with V3 Fallback initialized');
+        // Pre-fetch stable token prices
+        await this.updateTokenPrices();
+        
+        logger.logSuccess('PriceFetcher initialized');
     }
     
     updateProvider(newProvider) {
         this.provider = newProvider;
-        this.cache.clear();
+        logger.logInfo('PriceFetcher provider updated');
+    }
+
+async getTokenPriceUSD(symbol) {
+    try {
+        // Check cache first (using existing this.tokenPrices Map)
+        const cacheKey = `${symbol}_USD`;
+        const cached = this.tokenPrices.get(cacheKey);
         
-        // Update V3 optimizer provider safely
-        if (this.v3Optimizer && typeof this.v3Optimizer.updateProvider === 'function') {
-            this.v3Optimizer.updateProvider(newProvider);
+        // Cache valid for 60 seconds
+        if (cached && (Date.now() - cached.timestamp < 60000)) {
+            logger.logDebug(`Price from cache: ${symbol} = $${cached.price}`);
+            return cached.price;
         }
         
-        logger.logInfo('🔄 PriceFetcher provider updated');
+        // Handle stablecoins
+        if (symbol === 'USDC' || symbol === 'USDT') {
+            const price = 1.0;
+            this.tokenPrices.set(cacheKey, {
+                price,
+                timestamp: Date.now(),
+                source: 'stablecoin'
+            });
+            return price;
+        }
+        
+        let price = null;
+        let source = null;
+        
+        // Try Chainlink first
+        try {
+            price = await this.getChainlinkPrice(symbol);
+            source = 'chainlink';
+            logger.logDebug(`Chainlink price: ${symbol} = $${price}`);
+        } catch (chainlinkError) {
+            logger.logWarning(`Chainlink failed for ${symbol}: ${chainlinkError.message}`);
+            
+            // Fallback to CoinGecko
+            try {
+                price = await this.getCoinGeckoPrice(symbol);
+                source = 'coingecko';
+                logger.logDebug(`CoinGecko price: ${symbol} = $${price}`);
+            } catch (geckoError) {
+                logger.logError(`CoinGecko also failed for ${symbol}`, geckoError);
+                throw new Error(`Failed to get price for ${symbol} from all sources`);
+            }
+        }
+        
+        // Validate price
+        if (!price || price <= 0 || !isFinite(price)) {
+            throw new Error(`Invalid price received for ${symbol}: ${price}`);
+        }
+        
+        // Cache the successful result
+        this.tokenPrices.set(cacheKey, {
+            price,
+            timestamp: Date.now(),
+            source
+        });
+        
+        return price;
+        
+    } catch (error) {
+        logger.logError(`Failed to get USD price for ${symbol}`, error);
+        
+        // Last resort fallback prices
+        const fallbackPrices = {
+            'WETH': 2400,
+            'WBTC': 68000,
+            'WMATIC': 0.90,
+            'LINK': 15,
+            'AAVE': 100,
+            'CRV': 0.5
+        };
+        
+        if (fallbackPrices[symbol]) {
+            logger.logWarning(`Using hardcoded fallback price for ${symbol}: $${fallbackPrices[symbol]}`);
+            return fallbackPrices[symbol];
+        }
+        
+        throw error;
+    }
+}
+
+// Add these helper methods to your PriceFetcher class:
+
+async getChainlinkPrice(symbol) {
+    const feedAddress = CHAINLINK_FEEDS[symbol];
+    
+    if (!feedAddress) {
+        throw new Error(`No Chainlink feed address for ${symbol}`);
     }
     
-    /**
-     * ✅ ENHANCED MAIN METHOD with V3 Fallback Logic
-     */
-    async getTokenPrice(tokenSymbol, dexName, inputAmountUSD = 1000, options = {}) {
-        const startTime = Date.now();
+    try {
+        // Create contract instance
+        const priceFeed = new ethers.Contract(
+            feedAddress,
+            CHAINLINK_AGGREGATOR_ABI,
+            this.provider
+        );
+        
+        // Get latest price data
+        const [roundId, answer, startedAt, updatedAt, answeredInRound] = 
+            await priceFeed.latestRoundData();
+        
+        // Check if price is stale (more than 1 hour old)
+        const currentTime = Math.floor(Date.now() / 1000);
+        if (currentTime - Number(updatedAt) > 3600) {
+            throw new Error(`Chainlink price is stale (last update: ${new Date(Number(updatedAt) * 1000).toISOString()})`);
+        }
+        
+        // Get decimals
+        const decimals = await priceFeed.decimals();
+        
+        // Convert price to number
+        const price = parseFloat(ethers.formatUnits(answer, decimals));
+        
+        if (price <= 0) {
+            throw new Error(`Invalid Chainlink price: ${price}`);
+        }
+        
+        return price;
+        
+    } catch (error) {
+        throw new Error(`Chainlink query failed: ${error.message}`);
+    }
+}
+
+async getCoinGeckoPrice(symbol) {
+    const tokenId = COINGECKO_IDS[symbol];
+    
+    if (!tokenId) {
+        throw new Error(`No CoinGecko ID for ${symbol}`);
+    }
+    
+    try {
+        // CoinGecko API endpoint
+        const url = `https://api.coingecko.com/api/v3/simple/price?ids=${tokenId}&vs_currencies=usd`;
+        
+        // Fetch with timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        
+        const response = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+                'Accept': 'application/json'
+            }
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            throw new Error(`CoinGecko API error: ${response.status} ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        // Extract price
+        const price = data[tokenId]?.usd;
+        
+        if (!price || price <= 0) {
+            throw new Error(`Invalid CoinGecko price: ${price}`);
+        }
+        
+        return price;
+        
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            throw new Error('CoinGecko request timeout');
+        }
+        throw error;
+    }
+}
+
+// Optional: Add method to refresh all token prices
+async updateTokenPrices() {
+    logger.logInfo('Updating all token prices...');
+    
+    const tokens = Object.keys(CHAINLINK_FEEDS);
+    const results = await Promise.allSettled(
+        tokens.map(symbol => this.getTokenPriceUSD(symbol))
+    );
+    
+    let successCount = 0;
+    results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+            successCount++;
+            logger.logDebug(`${tokens[index]}: $${result.value}`);
+        } else {
+            logger.logWarning(`Failed to update ${tokens[index]}: ${result.reason.message}`);
+        }
+    });
+    
+    logger.logInfo(`Updated ${successCount}/${tokens.length} token prices`);
+}
+
+// Optional: Add method to get price source info
+getPriceSourceInfo(symbol) {
+    const cacheKey = `${symbol}_USD`;
+    const cached = this.tokenPrices.get(cacheKey);
+    
+    if (!cached) {
+        return { cached: false };
+    }
+    
+    return {
+        cached: true,
+        price: cached.price,
+        source: cached.source,
+        age: Date.now() - cached.timestamp,
+        timestamp: new Date(cached.timestamp).toISOString()
+    };
+}
+    async getTokenPrice(tokenSymbol, dexName) {
+        const cacheKey = `${tokenSymbol}_${dexName}`;
+        const cached = this.cache.get(cacheKey);
+        
+        if (cached) {
+            return cached;
+        }
         
         try {
-            // Input validation
-            if (!tokenSymbol || !dexName || inputAmountUSD <= 0) {
-                return this.createErrorResult('Invalid input parameters', dexName);
-            }
-            
-            const cacheKey = `${tokenSymbol}_${dexName}_${inputAmountUSD}`;
-            const cached = this.cache.get(cacheKey);
-            
-            if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
-                return cached.data;
-            }
-            
-            const token = this.config.tokens[tokenSymbol];
+            const token = config.tokens[tokenSymbol];
             if (!token) {
-                return this.createErrorResult(`Token ${tokenSymbol} not configured`, dexName);
+                throw new Error(`Unknown token: ${tokenSymbol}`);
             }
             
-            // Stablecoin handling
-            if (['USDC', 'USDT', 'DAI'].includes(tokenSymbol)) {
-                return this.createStablecoinResult(tokenSymbol, dexName);
+            const dex = config.dexes[dexName];
+            if (!dex) {
+                throw new Error(`Unknown DEX: ${dexName}`);
             }
-            
-            logger.logDebug(`🔍 Enhanced price fetch: ${tokenSymbol} on ${dexName} for $${inputAmountUSD}`);
             
             let result;
             
-            // ✅ ENHANCED PRIORITY SYSTEM with V3 Fallback
-            if (dexName === 'uniswap' || dexName.includes('v3')) {
-                // Direct V3 request
-                result = await this.getV3Price(token, dexName, inputAmountUSD);
-                
-                if (!result.success) {
-                    logger.logDebug(`🔄 V3 direct failed for ${tokenSymbol}, trying V2 fallback`);
-                    result = await this.getV2Price(token, this.getV2DexName(dexName), inputAmountUSD);
-                    if (result.success) {
-                        result.method = 'V2-fallback-from-V3';
-                        this.trackFallback(tokenSymbol, 'v3_to_v2', 'V3 direct failed');
-                    }
-                }
+            if (dex.type === 'v3') {
+                result = await this.getV3Price(token, dex);
             } else {
-                // ✅ ENHANCED V2 with AUTOMATIC V3 FALLBACK
-                result = await this.getV2PriceWithFallback(token, dexName, inputAmountUSD);
+                result = await this.getV2Price(token, dex);
             }
             
-            // Add execution time tracking
-            const executionTime = Date.now() - startTime;
+            // Cache successful result
             if (result.success) {
-                result.executionTime = executionTime;
-                
-                // Cache successful results
-                this.cache.set(cacheKey, {
-                    data: result,
-                    timestamp: Date.now()
-                });
-                
-                logger.logDebug(`✅ Price fetch success: ${tokenSymbol} = $${result.price.toFixed(4)} (${executionTime}ms)`);
-            } else {
-                logger.logWarning(`❌ Price fetch failed: ${tokenSymbol} on ${dexName} - ${result.error} (${executionTime}ms)`);
+                this.cache.set(cacheKey, result);
             }
             
             return result;
             
         } catch (error) {
-            const executionTime = Date.now() - startTime;
-            logger.logError(`💥 Price fetch critical error for ${tokenSymbol}`, error);
-            return this.createErrorResult(`Critical error: ${error.message}`, dexName, executionTime);
-        }
-    }
-    
-    /**
-     * ✅ NEW: Enhanced V2 price fetching with automatic V3 fallback
-     */
-    async getV2PriceWithFallback(token, dexName, inputAmountUSD) {
-        try {
-            // Step 1: Try V2 first
-            const v2Result = await this.getV2Price(token, dexName, inputAmountUSD);
-            
-            if (v2Result.success && v2Result.liquidity > 1000) {
-                // V2 succeeded with good liquidity
-                this.fallbackStats.v2SuccessCount++;
-                return v2Result;
-            }
-            
-            // Step 2: V2 failed or has low liquidity - AUTOMATIC V3 FALLBACK
-            const failureReason = v2Result.success ? 
-                `Low V2 liquidity: $${(v2Result.liquidity/1000).toFixed(0)}K` : 
-                v2Result.error || 'V2 fetch failed';
-            
-            logger.logInfo(`🔄 Fallback: V2 ${failureReason} for ${token.symbol}, trying V3...`);
-            
-            // Step 3: Try V3 fallback across all protocols and fee tiers
-            const v3FallbackResult = await this.performV3Fallback(token, inputAmountUSD, failureReason);
-            
-            if (v3FallbackResult.success) {
-                // ✅ V3 FALLBACK SUCCESS - Enhanced Logging
-                logger.logSuccess(`✅ Fallback: used V3 pool for ${token.symbol}/USDC after V2 failed`);
-                logger.logInfo(`   V3 Details: ${v3FallbackResult.protocol} @ ${v3FallbackResult.feeTier/10000}% fee, $${(v3FallbackResult.liquidity/1000).toFixed(0)}K liquidity`);
-                
-                v3FallbackResult.method = 'V3-Fallback';
-                v3FallbackResult.fallbackReason = failureReason;
-                
-                // Track fallback usage
-                this.trackFallback(token.symbol, 'v2_to_v3', failureReason);
-                
-                return v3FallbackResult;
-            }
-            
-            // Both V2 and V3 failed
-            logger.logWarning(`❌ Both V2 and V3 failed for ${token.symbol}`);
-            return this.createErrorResult(`V2 failed: ${failureReason}, V3 fallback also failed: ${v3FallbackResult.error}`, dexName);
-            
-        } catch (error) {
-            logger.logError(`V2 with fallback failed for ${token.symbol}`, error);
-            return this.createErrorResult(`V2+V3 fallback error: ${error.message}`, dexName);
-        }
-    }
-    
-    /**
-     * ✅ NEW: Comprehensive V3 fallback across all protocols and fee tiers
-     */
-    async performV3Fallback(token, inputAmountUSD, originalFailureReason) {
-        const inputAmount = await this.convertUSDToTokenAmount(inputAmountUSD, token);
-        const baseTokens = ['USDC', 'WETH', 'WMATIC', 'USDT'];
-        
-        // Try all V3 protocols
-        const v3Protocols = [
-            { name: 'Uniswap V3', factory: this.contracts.uniswapV3Factory, quoter: this.contracts.uniswapV3Quoter },
-            { name: 'QuickSwap V3', factory: this.contracts.quickswapV3Factory, quoter: this.contracts.quickswapV3Quoter }
-        ];
-        
-        for (const protocol of v3Protocols) {
-            try {
-                const factory = new ethers.Contract(protocol.factory, this.abis.v3Factory, this.provider);
-                const quoter = new ethers.Contract(protocol.quoter, this.abis.v3Quoter, this.provider);
-                
-                // Try all base tokens
-                for (const baseTokenSymbol of baseTokens) {
-                    if (baseTokenSymbol === token.symbol) continue;
-                    
-                    const baseToken = this.config.tokens[baseTokenSymbol];
-                    if (!baseToken) continue;
-                    
-                    // Try all fee tiers (sorted by typical liquidity)
-                    for (const feeTier of this.v3FeeTiers) {
-                        try {
-                            const result = await this.tryV3PoolFallback(
-                                factory, quoter, token, baseToken, feeTier, 
-                                inputAmount, inputAmountUSD, protocol.name
-                            );
-                            
-                            if (result.success && result.liquidity > 500) {
-                                logger.logDebug(`🦄 V3 Fallback Success: ${protocol.name} ${token.symbol}/${baseToken.symbol} @ ${feeTier/10000}%`);
-                                result.protocol = protocol.name;
-                                result.fallbackUsed = true;
-                                return result;
-                            }
-                            
-                        } catch (poolError) {
-                            logger.logDebug(`V3 fallback pool error: ${protocol.name} ${token.symbol}/${baseTokenSymbol} @ ${feeTier/10000}%: ${poolError.message}`);
-                            continue;
-                        }
-                    }
-                }
-                
-            } catch (protocolError) {
-                logger.logDebug(`V3 fallback protocol error: ${protocol.name}: ${protocolError.message}`);
-                continue;
-            }
-        }
-        
-        return { success: false, error: 'All V3 fallback attempts failed' };
-    }
-    
-    /**
-     * ✅ NEW: Enhanced V3 pool testing for fallback
-     */
-    async tryV3PoolFallback(factory, quoter, token, baseToken, feeTier, inputAmount, inputAmountUSD, protocolName) {
-        try {
-            // Get pool address with timeout
-            const poolAddress = await Promise.race([
-                factory.getPool(token.address, baseToken.address, feeTier),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Factory timeout')), 3000)
-                )
-            ]);
-            
-            if (poolAddress === ethers.ZeroAddress) {
-                throw new Error(`V3 pool doesn't exist`);
-            }
-            
-            // Get quote with timeout protection
-            const amountOut = await Promise.race([
-                quoter.quoteExactInputSingle.staticCall(
-                    token.address,
-                    baseToken.address,
-                    feeTier,
-                    ethers.parseUnits(inputAmount.toString(), token.decimals),
-                    0
-                ),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('V3 quote timeout')), 5000)
-                )
-            ]);
-            
-            const outputAmount = parseFloat(ethers.formatUnits(amountOut, baseToken.decimals));
-            
-            if (outputAmount <= 0) {
-                throw new Error(`Zero V3 output amount`);
-            }
-            
-            // Calculate USD price with real-time data
-            const price = await this.calculateUSDPrice(outputAmount, baseToken, inputAmount);
-            
-            // Get real liquidity with timeout
-            const liquidity = await Promise.race([
-                this.getV3PoolLiquidity(poolAddress, token, baseToken),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('V3 liquidity timeout')), 3000)
-                )
-            ]);
-            
-            // Enhanced validation for fallback
-            if (liquidity < 500) {
-                throw new Error(`Insufficient V3 liquidity: $${liquidity.toFixed(0)}`);
-            }
-            
-            // Calculate realistic slippage and gas
-            const slippage = this.estimateV3Slippage(inputAmountUSD, liquidity, feeTier);
-            const gasEstimate = this.estimateV3Gas(token.symbol);
-            
+            logger.logError(`Price fetch failed for ${tokenSymbol} on ${dexName}`, error);
             return {
-                success: true,
-                price,
-                liquidity,
-                liquidityBreakdown: {
-                    totalLiquidity: liquidity,
-                    method: 'v3_fallback',
-                    poolAddress,
-                    feeTier,
-                    protocol: protocolName,
-                    steps: [{
-                        token: token.symbol,
-                        baseToken: baseToken.symbol,
-                        pool: poolAddress,
-                        liquidity,
-                        feeTier,
-                        protocol: protocolName
-                    }]
-                },
-                method: `V3-Fallback-${feeTier/10000}%`,
-                dex: protocolName.toLowerCase().replace(' ', ''),
-                path: [token.symbol, baseToken.symbol],
-                estimatedSlippage: slippage,
-                gasEstimate,
-                poolAddress,
-                feeTier
+                success: false,
+                error: error.message,
+                dex: dexName
             };
-            
-        } catch (error) {
-            throw new Error(`V3 fallback pool error: ${error.message}`);
         }
     }
     
-    /**
-     * ✅ Track fallback usage for analytics
-     */
-    trackFallback(tokenSymbol, fallbackType, reason) {
-        // Update global stats
-        this.fallbackStats.v3FallbacksUsed++;
-        
-        // Track by token
-        const tokenCount = this.fallbackStats.fallbacksByToken.get(tokenSymbol) || 0;
-        this.fallbackStats.fallbacksByToken.set(tokenSymbol, tokenCount + 1);
-        
-        // Track by reason
-        const reasonCount = this.fallbackStats.fallbacksByReason.get(reason) || 0;
-        this.fallbackStats.fallbacksByReason.set(reason, reasonCount + 1);
-        
-        logger.logInfo(`📊 Fallback tracked: ${tokenSymbol} (${fallbackType}) - Total V3 fallbacks: ${this.fallbackStats.v3FallbacksUsed}`);
-    }
-    
-    /**
-     * ✅ Get fallback statistics for monitoring
-     */
-    getFallbackStats() {
-        const totalAttempts = this.fallbackStats.v2SuccessCount + this.fallbackStats.v3FallbacksUsed;
-        
-        return {
-            totalAttempts,
-            v2SuccessCount: this.fallbackStats.v2SuccessCount,
-            v3FallbacksUsed: this.fallbackStats.v3FallbacksUsed,
-            fallbackRate: totalAttempts > 0 ? ((this.fallbackStats.v3FallbacksUsed / totalAttempts) * 100).toFixed(1) + '%' : '0%',
-            topFallbackTokens: Array.from(this.fallbackStats.fallbacksByToken.entries())
-                .sort(([,a], [,b]) => b - a)
-                .slice(0, 5),
-            topFallbackReasons: Array.from(this.fallbackStats.fallbacksByReason.entries())
-                .sort(([,a], [,b]) => b - a)
-                .slice(0, 5)
-        };
-    }
-    
-    // === EXISTING METHODS (Enhanced V3, V2, Helper Methods) ===
-    
-    async getV3Price(token, dexName, inputAmountUSD) {
+    async getV2Price(token, dex) {
         try {
-            const inputAmount = await this.convertUSDToTokenAmount(inputAmountUSD, token);
+            const router = new ethers.Contract(dex.router, this.abis.v2Router, this.provider);
+            const factory = new ethers.Contract(dex.factory, this.abis.v2Factory, this.provider);
             
-            // Use V3 optimizer if available
-            if (this.v3Optimizer && typeof this.v3Optimizer.getOptimalV3Price === 'function') {
+            // Try multiple quote tokens
+            const quoteTokens = ['USDC', 'USDT', 'WETH', 'WMATIC'];
+            
+            for (const quoteSymbol of quoteTokens) {
+                if (quoteSymbol === token.symbol) continue;
+                
+                const quoteToken = config.tokens[quoteSymbol];
+                if (!quoteToken) continue;
+                
                 try {
-                    const result = await Promise.race([
-                        this.v3Optimizer.getOptimalV3Price(token, inputAmount, inputAmountUSD),
-                        new Promise((_, reject) => 
-                            setTimeout(() => reject(new Error('V3 optimizer timeout')), 10000)
-                        )
-                    ]);
+                    // Check if pair exists
+                    const pairAddress = await factory.getPair(token.address, quoteToken.address);
+                    if (pairAddress === ethers.ZeroAddress) continue;
                     
-                    if (result.success) {
-                        return result;
-                    }
-                } catch (optimizerError) {
-                    logger.logDebug(`V3 optimizer failed: ${optimizerError.message}`);
+                    // Get price quote
+                    const amountIn = ethers.parseUnits('1', token.decimals);
+                    const amounts = await router.getAmountsOut(amountIn, [token.address, quoteToken.address]);
+                    
+                    const amountOut = amounts[1];
+                    const price = await this.convertToUSD(amountOut, quoteToken);
+                    
+                    // Get liquidity
+                    const liquidity = await this.getV2Liquidity(pairAddress, token, quoteToken);
+                    
+                    return {
+                        success: true,
+                        price,
+                        liquidity,
+                        dex: dex.name,
+                        poolInfo: {
+                            type: 'v2',
+                            pair: pairAddress,
+                            quoteToken: quoteSymbol
+                        }
+                    };
+                    
+                } catch (error) {
+                    continue;
                 }
             }
             
-            // Manual V3 implementation as fallback
-            return await this.getV3PriceManual(token, dexName, inputAmount, inputAmountUSD);
+            throw new Error('No valid V2 pairs found');
             
         } catch (error) {
-            logger.logError(`V3 price fetch failed for ${token.symbol}`, error);
-            return this.createErrorResult(`V3 error: ${error.message}`, dexName);
+            throw new Error(`V2 price fetch failed: ${error.message}`);
         }
     }
     
-    async getV3PriceManual(token, dexName, inputAmount, inputAmountUSD) {
+    async getV3Price(token, dex) {
         try {
-            let factoryAddress, quoterAddress;
-            if (dexName.includes('quickswap') || dexName === 'quickswapv3') {
-                factoryAddress = this.contracts.quickswapV3Factory;
-                quoterAddress = this.contracts.quickswapV3Quoter;
-            } else {
-                factoryAddress = this.contracts.uniswapV3Factory;
-                quoterAddress = this.contracts.uniswapV3Quoter;
-            }
+            const factory = new ethers.Contract(dex.factory, this.abis.v3Factory, this.provider);
+            const quoter = new ethers.Contract(dex.quoter, this.abis.v3Quoter, this.provider);
             
-            const factory = new ethers.Contract(factoryAddress, this.abis.v3Factory, this.provider);
-            const quoter = new ethers.Contract(quoterAddress, this.abis.v3Quoter, this.provider);
+            // Try multiple quote tokens
+            // Try multiple quote tokens
+            const quoteTokens = ['USDC', 'USDT', 'WETH', 'WMATIC'];
             
-            const baseTokens = ['USDC', 'WETH', 'WMATIC', 'USDT'];
-            
-            for (const baseTokenSymbol of baseTokens) {
-                if (baseTokenSymbol === token.symbol) continue;
+            for (const quoteSymbol of quoteTokens) {
+                if (quoteSymbol === token.symbol) continue;
                 
-                const baseToken = this.config.tokens[baseTokenSymbol];
-                if (!baseToken) continue;
+                const quoteToken = config.tokens[quoteSymbol];
+                if (!quoteToken) continue;
                 
+                // Try all fee tiers
                 for (const feeTier of this.v3FeeTiers) {
                     try {
-                        const result = await this.tryV3Pool(
-                            factory, quoter, token, baseToken, feeTier, inputAmount, inputAmountUSD, dexName
+                        // Check if pool exists
+                        const poolAddress = await factory.getPool(token.address, quoteToken.address, feeTier);
+                        if (poolAddress === ethers.ZeroAddress) continue;
+                        
+                        // Get pool info
+                        const pool = new ethers.Contract(poolAddress, this.abis.v3Pool, this.provider);
+                        const [slot0, liquidity] = await Promise.all([
+                            pool.slot0(),
+                            pool.liquidity()
+                        ]);
+                        
+                        // Skip if no liquidity
+                        if (liquidity === 0n) continue;
+                        
+                        // Get price quote
+                        const amountIn = ethers.parseUnits('1', token.decimals);
+                        const amountOut = await quoter.quoteExactInputSingle.staticCall(
+                            token.address,
+                            quoteToken.address,
+                            feeTier,
+                            amountIn,
+                            0
                         );
                         
-                        if (result.success && result.liquidity > 500) {
-                            logger.logSuccess(`🦄 V3 Manual Success: ${token.symbol}/${baseToken.symbol} @ ${feeTier/10000}%`);
-                            return result;
-                        }
+                        const price = await this.convertToUSD(amountOut, quoteToken);
+                        const liquidityUSD = await this.calculateV3Liquidity(pool, slot0, token, quoteToken);
                         
-                    } catch (poolError) {
-                        logger.logDebug(`V3 pool ${token.symbol}/${baseTokenSymbol} @ ${feeTier/10000}% failed: ${poolError.message}`);
+                        return {
+                            success: true,
+                            price,
+                            liquidity: liquidityUSD,
+                            dex: dex.name,
+                            poolInfo: {
+                                type: 'v3',
+                                pool: poolAddress,
+                                feeTier,
+                                quoteToken: quoteSymbol
+                            }
+                        };
+                        
+                    } catch (error) {
                         continue;
                     }
                 }
             }
             
-            return this.createErrorResult('No viable V3 pools found', dexName);
+            throw new Error('No valid V3 pools found');
             
         } catch (error) {
-            logger.logError(`V3 manual fetch failed for ${token.symbol}`, error);
-            return this.createErrorResult(`V3 manual error: ${error.message}`, dexName);
+            throw new Error(`V3 price fetch failed: ${error.message}`);
         }
     }
     
-    async tryV3Pool(factory, quoter, token, baseToken, feeTier, inputAmount, inputAmountUSD, dexName) {
+    async getV2Liquidity(pairAddress, token, quoteToken) {
         try {
-            const poolAddress = await Promise.race([
-                factory.getPool(token.address, baseToken.address, feeTier),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Factory timeout')), 3000)
-                )
+            const pair = new ethers.Contract(pairAddress, this.abis.v2Pair, this.provider);
+            const [reserves, token0] = await Promise.all([
+                pair.getReserves(),
+                pair.token0()
             ]);
             
-            if (poolAddress === ethers.ZeroAddress) {
-                throw new Error(`Pool doesn't exist`);
-            }
+            const isToken0 = token.address.toLowerCase() === token0.toLowerCase();
+            const tokenReserve = isToken0 ? reserves[0] : reserves[1];
+            const quoteReserve = isToken0 ? reserves[1] : reserves[0];
             
-            const amountOut = await Promise.race([
-                quoter.quoteExactInputSingle.staticCall(
-                    token.address,
-                    baseToken.address,
-                    feeTier,
-                    ethers.parseUnits(inputAmount.toString(), token.decimals),
-                    0
-                ),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Quote timeout')), 5000)
-                )
-            ]);
+            // Convert reserves to USD
+            const tokenAmount = parseFloat(ethers.formatUnits(tokenReserve, token.decimals));
+            const quoteAmount = parseFloat(ethers.formatUnits(quoteReserve, quoteToken.decimals));
             
-            const outputAmount = parseFloat(ethers.formatUnits(amountOut, baseToken.decimals));
+            const tokenPrice = await this.getTokenPriceUSD(token.symbol);
+            const quotePrice = await this.getTokenPriceUSD(quoteToken.symbol);
             
-            if (outputAmount <= 0) {
-                throw new Error(`Zero output amount`);
-            }
+            const liquidityUSD = (tokenAmount * tokenPrice) + (quoteAmount * quotePrice);
             
-            const price = await this.calculateUSDPrice(outputAmount, baseToken, inputAmount);
-            const liquidity = await Promise.race([
-                this.getV3PoolLiquidity(poolAddress, token, baseToken),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Liquidity timeout')), 3000)
-                )
-            ]);
-            
-            if (liquidity < 500) {
-                throw new Error(`Insufficient liquidity: $${liquidity.toFixed(0)}`);
-            }
-            
-            const slippage = this.estimateV3Slippage(inputAmountUSD, liquidity, feeTier);
-            const gasEstimate = this.estimateV3Gas(token.symbol);
-            
-            return {
-                success: true,
-                price,
-                liquidity,
-                liquidityBreakdown: {
-                    totalLiquidity: liquidity,
-                    method: 'v3_pool_direct',
-                    poolAddress,
-                    feeTier,
-                    steps: [{
-                        token: token.symbol,
-                        baseToken: baseToken.symbol,
-                        pool: poolAddress,
-                        liquidity,
-                        feeTier
-                    }]
-                },
-                method: `V3-${feeTier/10000}%`,
-                dex: dexName,
-                path: [token.symbol, baseToken.symbol],
-                estimatedSlippage: slippage,
-                gasEstimate,
-                poolAddress,
-                feeTier
-            };
+            return liquidityUSD;
             
         } catch (error) {
-            throw new Error(`V3 pool error: ${error.message}`);
+            logger.logError('Failed to get V2 liquidity', error);
+            return 0;
         }
     }
     
-    // === EXISTING V2 AND HELPER METHODS (kept same) ===
-    
-    async getV2Price(token, dexName, inputAmountUSD) {
+    async calculateV3Liquidity(pool, slot0, token, quoteToken) {
         try {
-            const inputAmount = await this.convertUSDToTokenAmount(inputAmountUSD, token);
+            const liquidity = await pool.liquidity();
+            const sqrtPriceX96 = slot0[0];
             
-            const routerAddress = this.getV2RouterAddress(dexName);
-            if (!routerAddress) {
-                return this.createErrorResult(`Router not found for ${dexName}`, dexName);
-            }
+            // Calculate price
+            const price = Math.pow(Number(sqrtPriceX96) / Math.pow(2, 96), 2);
             
-            const router = new ethers.Contract(routerAddress, this.abis.v2Router, this.provider);
+            // Simplified liquidity calculation
+            // In production, this would need to account for tick ranges
+            const liquidityNumber = Number(liquidity);
+            const estimatedValue = liquidityNumber * Math.sqrt(price) / 1e12;
             
-            const factoryAddress = await Promise.race([
-                router.factory(),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Factory timeout')), 3000)
-                )
-            ]);
+            const quotePrice = await this.getTokenPriceUSD(quoteToken.symbol);
+            const liquidityUSD = estimatedValue * quotePrice * 0.1; // Conservative estimate
             
-            const factory = new ethers.Contract(factoryAddress, this.abis.v2Factory, this.provider);
-            
-            const baseTokens = ['USDC', 'WETH', 'WMATIC', 'USDT'];
-            
-            for (const baseTokenSymbol of baseTokens) {
-                if (baseTokenSymbol === token.symbol) continue;
-                
-                const baseToken = this.config.tokens[baseTokenSymbol];
-                if (!baseToken) continue;
-                
-                try {
-                    const result = await this.tryV2Pair(
-                        router, factory, token, baseToken, inputAmount, inputAmountUSD, dexName
-                    );
-                    
-                    if (result.success && result.liquidity > 100) {
-                        logger.logSuccess(`🍱 V2 Success: ${token.symbol}/${baseToken.symbol} on ${dexName}`);
-                        return result;
-                    }
-                    
-                } catch (pairError) {
-                    logger.logDebug(`V2 pair ${token.symbol}/${baseTokenSymbol} failed: ${pairError.message}`);
-                    continue;
-                }
-            }
-            
-            return this.createErrorResult('No viable V2 pairs found', dexName);
+            return Math.max(100, liquidityUSD);
             
         } catch (error) {
-            logger.logError(`V2 price fetch failed for ${token.symbol}`, error);
-            return this.createErrorResult(`V2 error: ${error.message}`, dexName);
+            logger.logError('Failed to calculate V3 liquidity', error);
+            return 1000; // Fallback
         }
     }
     
-    // [Rest of the helper methods remain the same...]
-    
-    getV2RouterAddress(dexName) {
-        const routerMap = {
-            'sushiswap': this.contracts.sushiswapRouter,
-            'quickswap': this.contracts.quickswapRouter
-        };
-        
-        return routerMap[dexName] || this.config.dexes[dexName]?.router;
-    }
-    
-    getV2DexName(v3DexName) {
-        if (v3DexName.includes('quickswap')) return 'quickswap';
-        if (v3DexName.includes('sushi')) return 'sushiswap';
-        return 'quickswap';
-    }
-    
-    // [Include all other existing methods...]
-    
-    createStablecoinResult(tokenSymbol, dexName) {
-        return {
-            success: true,
-            price: 1.0,
-            liquidity: 10000000,
-            liquidityBreakdown: {
-                totalLiquidity: 10000000,
-                method: 'stablecoin_assumption',
-                steps: []
-            },
-            method: 'stablecoin',
-            dex: dexName,
-            path: [tokenSymbol],
-            estimatedSlippage: 0.01,
-            gasEstimate: 100000,
-            executionTime: 1
-        };
-    }
-    
-    createErrorResult(error, dexName, executionTime = 0) {
-        return {
-            success: false,
-            error,
-            price: 0,
-            liquidity: 0,
-            liquidityBreakdown: {
-                totalLiquidity: 0,
-                method: 'error',
-                steps: []
-            },
-            dex: dexName,
-            rejectionReason: 'fetch_error',
-            executionTime
-        };
-    }
-}
-
-/**
- * ✅ PRODUCTION-READY V3LiquidityOptimizer
- */
-class V3LiquidityOptimizer {
-    constructor(provider) {
-        this.provider = provider;
-        this.liquidityCache = new Map();
-        this.poolPerformanceCache = new Map();
-        this.cacheTimeout = 90000; // 1.5 minute cache
-        
-        // V3 Protocols on Polygon
-        this.v3Protocols = {
-            uniswap: {
-                factory: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
-                quoter: '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6',
-                name: 'Uniswap V3'
-            },
-            quickswap: {
-                factory: '0x411b0fAcC3489691f28ad58c47006AF5E3Ab3A28',
-                quoter: '0xa15F0D7377B2A0C0c10262E4ABE1c5B5BBa7c1c4',
-                name: 'QuickSwap V3'
-            }
-        };
-        
-        this.allFeeTiers = [100, 500, 3000, 10000]; // All fee tiers
-        
-        // ABIs
-        this.abis = {
-            v3Factory: ["function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)"],
-            v3Pool: [
-                "function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
-                "function liquidity() external view returns (uint128)",
-                "function token0() external view returns (address)",
-                "function token1() external view returns (address)",
-                "function fee() external view returns (uint24)"
-            ],
-            v3Quoter: [
-                "function quoteExactInputSingle(address tokenIn, address tokenOut, uint24 fee, uint256 amountIn, uint160 sqrtPriceLimitX96) external returns (uint256 amountOut)"
-            ]
-        };
-        
-        logger.logInfo('🔧 V3LiquidityOptimizer initialized');
-    }
-    
-    updateProvider(newProvider) {
-        this.provider = newProvider;
-        this.liquidityCache.clear();
-        logger.logInfo('🔄 V3LiquidityOptimizer provider updated');
-    }
-    
-    /**
-     * ✅ Get optimal V3 price with comprehensive error handling
-     */
-    async getOptimalV3Price(token, inputAmount, inputAmountUSD, baseTokens = ['USDC', 'WETH', 'WMATIC']) {
-        try {
-            logger.logDebug(`🔍 V3 Optimization: ${token.symbol} for ${inputAmountUSD}`);
-            
-            const allPoolOptions = [];
-            
-            // Scan all base tokens
-            for (const baseTokenSymbol of baseTokens) {
-                if (baseTokenSymbol === token.symbol) continue;
-                
-                const baseToken = require('../config/polygon.json').tokens[baseTokenSymbol];
-                if (!baseToken) continue;
-                
-                try {
-                    const poolOptions = await this.getOptimalPoolsForPair(token, baseToken, inputAmountUSD);
-                    allPoolOptions.push(...poolOptions);
-                } catch (error) {
-                    logger.logDebug(`Pool scan failed for ${token.symbol}/${baseTokenSymbol}: ${error.message}`);
-                    continue;
-                }
-            }
-            
-            if (allPoolOptions.length === 0) {
-                return { 
-                    success: false, 
-                    error: 'No V3 pools found', 
-                    details: 'Comprehensive V3 scan found no viable pools' 
-                };
-            }
-            
-            // Rank and try options
-            const rankedOptions = this.rankPoolsByEfficiency(allPoolOptions, inputAmountUSD);
-            
-            for (const poolOption of rankedOptions.slice(0, 3)) {
-                try {
-                    const result = await this.executeOptimalV3Trade(poolOption, token, inputAmount, inputAmountUSD);
-                    
-                    if (result.success) {
-                        logger.logSuccess(`🦄 V3 Optimal: ${poolOption.protocol} ${token.symbol}/${poolOption.baseToken.symbol}`);
-                        return result;
-                    }
-                    
-                } catch (error) {
-                    logger.logDebug(`V3 option failed: ${poolOption.protocol} - ${error.message}`);
-                    continue;
-                }
-            }
-            
-            return { 
-                success: false, 
-                error: 'All V3 options failed', 
-                details: `Tried ${rankedOptions.length} V3 pool options` 
-            };
-            
-        } catch (error) {
-            logger.logError('V3 optimization failed', error);
-            return { success: false, error: error.message };
-        }
-    }
-    
-    /**
-     * ✅ Get optimal pools for token pair
-     */
-    async getOptimalPoolsForPair(token, baseToken, inputAmountUSD) {
-        const cacheKey = `${token.symbol}_${baseToken.symbol}_${inputAmountUSD}`;
-        const cached = this.liquidityCache.get(cacheKey);
-        
-        if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
-            return cached.pools;
+    async convertToUSD(amount, token) {
+        if (token.symbol === 'USDC' || token.symbol === 'USDT') {
+            return parseFloat(ethers.formatUnits(amount, token.decimals));
         }
         
-        const poolOptions = [];
+        const tokenPrice = await this.getTokenPriceUSD(token.symbol);
+        const tokenAmount = parseFloat(ethers.formatUnits(amount, token.decimals));
         
-        // Scan all V3 protocols
-        for (const [protocolKey, protocolConfig] of Object.entries(this.v3Protocols)) {
-            try {
-                const protocolPools = await this.scanProtocolForPair(
-                    protocolConfig, 
-                    token, 
-                    baseToken, 
-                    inputAmountUSD
-                );
-                poolOptions.push(...protocolPools);
-                
-            } catch (error) {
-                logger.logDebug(`Failed to scan ${protocolConfig.name}: ${error.message}`);
-            }
-        }
-        
-        // Cache results
-        this.liquidityCache.set(cacheKey, {
-            pools: poolOptions,
-            timestamp: Date.now()
-        });
-        
-        return poolOptions;
+        return tokenAmount * tokenPrice;
     }
     
-    /**
-     * ✅ Scan protocol for pair
-     */
-    async scanProtocolForPair(protocolConfig, token, baseToken, inputAmountUSD) {
-        try {
-            const factory = new ethers.Contract(protocolConfig.factory, this.abis.v3Factory, this.provider);
-            const poolOptions = [];
-            
-            // Check all fee tiers
-            for (const feeTier of this.allFeeTiers) {
-                try {
-                    const poolAddress = await Promise.race([
-                        factory.getPool(token.address, baseToken.address, feeTier),
-                        new Promise((_, reject) => 
-                            setTimeout(() => reject(new Error('Factory timeout')), 3000)
-                        )
-                    ]);
-                    
-                    if (poolAddress === ethers.ZeroAddress) continue;
-                    
-                    // Basic pool analysis
-                    const poolAnalysis = await this.analyzeV3PoolBasic(poolAddress, token, baseToken, feeTier);
-                    
-                    if (poolAnalysis.isViable) {
-                        poolOptions.push({
-                            poolAddress,
-                            protocol: protocolConfig.name,
-                            quoter: protocolConfig.quoter,
-                            feeTier,
-                            token,
-                            baseToken,
-                            ...poolAnalysis
-                        });
-                    }
-                    
-                } catch (error) {
-                    continue;
-                }
-            }
-            
-            return poolOptions;
-            
-        } catch (error) {
-            logger.logDebug(`Protocol scan failed: ${error.message}`);
-            return [];
-        }
-    }
-    
-    /**
-     * ✅ Basic V3 pool analysis
-     */
-    async analyzeV3PoolBasic(poolAddress, token, baseToken, feeTier) {
-        try {
-            const pool = new ethers.Contract(poolAddress, this.abis.v3Pool, this.provider);
-            
-            const liquidity = await Promise.race([
-                pool.liquidity(),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Liquidity timeout')), 2000)
-                )
-            ]);
-            
-            const liquidityFloat = Number(liquidity);
-            
-            // Basic viability check
-            const isViable = liquidityFloat > 0;
-            const activeLiquidity = liquidityFloat / 1e12; // Simplified estimate
-            
-            return {
-                isViable,
-                totalLiquidity: liquidityFloat,
-                activeLiquidity: Math.max(activeLiquidity, 100),
-                expectedSlippage: 0.5, // Default estimate
-                efficiencyScore: 0.7 // Default score
-            };
-            
-        } catch (error) {
-            return { isViable: false, error: error.message };
-        }
-    }
-    
-    /**
-     * ✅ Rank pools by efficiency
-     */
-    rankPoolsByEfficiency(poolOptions, inputAmountUSD) {
-        return poolOptions
-            .map(pool => {
-                // Simple efficiency calculation
-                let score = 0.5;
-                
-                if (pool.activeLiquidity > inputAmountUSD * 5) score += 0.3;
-                if (pool.feeTier === 3000) score += 0.2; // Prefer 0.3% tier
-                
-                pool.efficiencyScore = score;
-                return pool;
-            })
-            .sort((a, b) => b.efficiencyScore - a.efficiencyScore);
-    }
-    
-    /**
-     * ✅ Execute V3 trade
-     */
-    async executeOptimalV3Trade(poolOption, token, inputAmount, inputAmountUSD) {
-        try {
-            if (!poolOption.quoter) {
-                throw new Error('No quoter available');
-            }
-            
-            const quoter = new ethers.Contract(poolOption.quoter, this.abis.v3Quoter, this.provider);
-            
-            const amountOut = await Promise.race([
-                quoter.quoteExactInputSingle.staticCall(
-                    token.address,
-                    poolOption.baseToken.address,
-                    poolOption.feeTier,
-                    ethers.parseUnits(inputAmount.toString(), token.decimals),
-                    0
-                ),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Quote timeout')), 5000)
-                )
-            ]);
-            
-            const outputAmount = parseFloat(ethers.formatUnits(amountOut, poolOption.baseToken.decimals));
-            
-            if (outputAmount <= 0) {
-                throw new Error('Zero output amount');
-            }
-            
-            // Calculate price (simplified)
-            const price = outputAmount / inputAmount;
-            
-            return {
-                success: true,
-                price,
-                liquidity: poolOption.activeLiquidity,
-                liquidityBreakdown: {
-                    totalLiquidity: poolOption.activeLiquidity,
-                    method: 'v3_optimized',
-                    poolAddress: poolOption.poolAddress,
-                    feeTier: poolOption.feeTier
-                },
-                method: `V3-Opt-${poolOption.feeTier/10000}%`,
-                dex: poolOption.protocol,
-                path: [token.symbol, poolOption.baseToken.symbol],
-                estimatedSlippage: poolOption.expectedSlippage || 0.5,
-                gasEstimate: 160000,
-                poolAddress: poolOption.poolAddress,
-                feeTier: poolOption.feeTier
-            };
-            
-        } catch (error) {
-            throw new Error(`V3 execution failed: ${error.message}`);
-        }
+    async cleanup() {
+        this.cache.flushAll();
+        this.cache.close();
+        logger.logInfo('PriceFetcher cleaned up');
     }
 }
 

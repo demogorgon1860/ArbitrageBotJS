@@ -1,7 +1,7 @@
 {
   "name": "polygon-arbitrage-bot",
-  "version": "2.1.0",
-  "description": "Fixed Polygon DEX Arbitrage Bot with Real-time Monitoring",
+  "version": "3.0.0",
+  "description": "Production-Ready Polygon DEX Arbitrage Bot with Real-time Analysis",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
@@ -10,12 +10,12 @@
     "test-telegram": "node test/test-telegram.js",
     "test-prices": "node test/test-prices.js",
     "test-all": "npm run test && npm run test-prices && npm run test-telegram",
+    "validate": "node scripts/validate-config.js",
     "logs": "tail -f logs/bot.log",
     "errors": "tail -f logs/error.log",
     "clear-cache": "rm -rf data/* cache/* logs/*",
     "setup": "node setup.js",
-    "validate": "node -e \"console.log('✅ Configuration validation passed')\"",
-    "health": "node -e \"const fs=require('fs'); console.log('📊 Health Check:'); console.log('Logs:', fs.existsSync('logs') ? '✅' : '❌'); console.log('Config:', fs.existsSync('config/polygon.json') ? '✅' : '❌'); console.log('Env:', fs.existsSync('.env') ? '✅' : '❌');\""
+    "health": "node scripts/health-check.js"
   },
   "keywords": [
     "arbitrage",
@@ -24,30 +24,22 @@
     "trading",
     "cryptocurrency",
     "dex",
-    "ethereum",
-    "fixed",
-    "optimized"
+    "ethereum"
   ],
   "author": "Arbitrage Bot Developer",
   "license": "MIT",
   "dependencies": {
+    "dotenv": "^16.3.1",
     "ethers": "^6.8.0",
-    "node-telegram-bot-api": "^0.64.0",
     "fs-extra": "^11.1.1",
-    "dotenv": "^16.3.1"
+    "node-cache": "^5.1.2",
+    "node-telegram-bot-api": "^0.64.0",
+    "p-limit": "3.1.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
   "engines": {
     "node": ">=16.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/yourusername/polygon-arbitrage-bot.git"
-  },
-  "bugs": {
-    "url": "https://github.com/yourusername/polygon-arbitrage-bot/issues"
-  },
-  "homepage": "https://github.com/yourusername/polygon-arbitrage-bot#readme"
+  }
 }
